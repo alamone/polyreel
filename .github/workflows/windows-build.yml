@@ -2,8 +2,9 @@
 # bundled).
 #
 # - Pushing a tag like v0.1.0 builds it and publishes a GitHub Release.
-# - Changes to the packaging (and manual runs from the Actions tab) only build
-#   it; the zip is attached to the run as an artifact for testing.
+# - Changes to the app or its packaging on main (and manual runs from the
+#   Actions tab) only build it; the zip is attached to the run as an artifact
+#   for testing.
 name: Windows build
 
 on:
@@ -11,6 +12,7 @@ on:
     tags: ["v*"]
     branches: [main]
     paths:
+      - "polyreel/**"
       - "packaging/**"
       - ".github/workflows/windows-build.yml"
       - "requirements.txt"
