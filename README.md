@@ -2,7 +2,7 @@
 
 Play a whole folder of videos **at the same time**, packed into one window like a
 masonry wall. Landscape, portrait, square and ultrawide videos all keep their shape;
-the layout engine fits them together like Tetris pieces so as little of the screen
+the layout engine fits them together like puzzle pieces so as little of the screen
 as possible is wasted.
 
 - **Smart packing.** Every layout is a guillotine tiling where each video keeps its
