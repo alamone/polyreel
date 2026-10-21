@@ -23,7 +23,7 @@ def _items(items: list[Item]) -> list[tuple[int, float]]:
 
 def plan(playing: list[Item], queued: list[Item], width: float, height: float,
          max_streams: int, min_area: float, lookahead: int = 1,
-         prev: Layout | None = None) -> Plan:
+         prev: Layout | None = None, crop: float = 0.0) -> Plan:
     """Fill free slots from the queue without breaking the size constraint.
 
     ``playing`` is in start order; when something has to go (the window
@@ -38,9 +38,9 @@ def plan(playing: list[Item], queued: list[Item], width: float, height: float,
     while len(keep) > max_streams:
         result.demote.append(keep.pop())
     while len(keep) > 1:
-        lay = solve(_items(keep), width, height, min_area, prev, effort=0)
+        lay = solve(_items(keep), width, height, min_area, prev, effort=0, crop=crop)
         if not lay.valid:
-            lay = solve(_items(keep), width, height, min_area, prev, effort=0.5, budget=0.08)
+            lay = solve(_items(keep), width, height, min_area, prev, effort=0.5, budget=0.08, crop=crop)
         if lay.valid:
             break
         result.demote.append(keep.pop())
@@ -63,9 +63,9 @@ def plan(playing: list[Item], queued: list[Item], width: float, height: float,
         best: tuple[Item, Layout] | None = None
         for cand in window:
             trial = current + [cand]
-            lay = solve(_items(trial), width, height, min_area, prev, effort=0)
+            lay = solve(_items(trial), width, height, min_area, prev, effort=0, crop=crop)
             if not lay.valid and cand is window[0]:
-                lay = solve(_items(trial), width, height, min_area, prev, effort=0.4, budget=0.08)
+                lay = solve(_items(trial), width, height, min_area, prev, effort=0.4, budget=0.08, crop=crop)
             if (lay.valid or not current) and (best is None or lay.score > best[1].score):
                 best = (cand, lay)
         if best is None:
@@ -75,10 +75,10 @@ def plan(playing: list[Item], queued: list[Item], width: float, height: float,
         pool.remove(best[0])
 
     if current:
-        final = solve(_items(current), width, height, min_area, prev, effort=1.0)
+        final = solve(_items(current), width, height, min_area, prev, effort=1.0, crop=crop)
         if not final.valid:
             # Annealing can wander; fall back to the quick search if it met the limit.
-            quick = solve(_items(current), width, height, min_area, prev, effort=0)
+            quick = solve(_items(current), width, height, min_area, prev, effort=0, crop=crop)
             if quick.valid:
                 final = quick
         result.layout = final

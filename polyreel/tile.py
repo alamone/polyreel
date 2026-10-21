@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRect, Qt, Signal
@@ -41,7 +42,14 @@ class VideoTile(QWidget):
         self._active = False     # true once the current file has loaded
         self._muted = True
         self._paused = False
+        self.zoom = 1.0          # >1 enlarges the fitted video, cropping its edges
+        self.user_muted = False  # muted with its own speaker button (or by the sound mode)
         self._anim: QPropertyAnimation | None = None
+        # Values mpv reports as they change, so the GUI never has to wait on
+        # a busy player to read them.
+        self._state = {"time-pos": 0.0, "duration": 0.0, "volume": 100.0,
+                       "frame-drop-count": 0, "decoder-frame-drop-count": 0,
+                       "container-fps": None}
 
         opts = dict(
             wid=str(int(self.winId())),
@@ -68,6 +76,8 @@ class VideoTile(QWidget):
         except Exception:
             pass
 
+        for name in self._state:
+            self.player.observe_property(name, self._on_state)
         self.player.observe_property("eof-reached", self._on_eof)
         self.player.observe_property("video-params", self._on_video_params)
         self.player.register_event_callback(self._on_event)
@@ -84,6 +94,10 @@ class VideoTile(QWidget):
             if data is not None and data.reason == mpv.MpvEventEndFile.ERROR and self.item is not None:
                 self._active = False
                 self.failed.emit(self, "could not be played")
+
+    def _on_state(self, name, value) -> None:
+        if value is not None:
+            self._state[name] = value
 
     def _on_eof(self, _name, value) -> None:
         if value and self._active and self.item is not None:
@@ -111,6 +125,15 @@ class VideoTile(QWidget):
             self.right_clicked.emit(self)
 
     # -- control (GUI thread) -------------------------------------------------
+    def _set(self, name: str, value) -> None:
+        """Change a property without waiting for the player to apply it."""
+        if isinstance(value, bool):
+            value = "yes" if value else "no"
+        try:
+            self.player.command_async("set", name, str(value))
+        except Exception:
+            pass
+
     def load(self, item, start: float = 0.0, loop: bool = False, hwdec: str | None = None) -> None:
         self.item = item
         self._active = False
@@ -120,7 +143,9 @@ class VideoTile(QWidget):
             p["hwdec"] = hwdec
         p["start"] = f"{start:.3f}" if start > 0 else "none"
         p["loop-file"] = "inf" if loop else "no"
-        p.pause = False
+        self.set_volume(100)  # a reused tile starts at full volume again
+        self._set("pause", False)
+        self._state.update({"time-pos": 0.0, "duration": item.duration or 0.0})
         p.loadfile(item.path)
 
     def stop(self) -> None:
@@ -144,34 +169,52 @@ class VideoTile(QWidget):
     def set_paused(self, paused: bool) -> None:
         if paused != self._paused:
             self._paused = paused
-            self.player.pause = paused
+            self._set("pause", paused)
 
     @property
     def paused(self) -> bool:
         return self._paused
 
+    def duration(self) -> float:
+        return float(self._state["duration"] or 0.0)
+
+    def position(self) -> float:
+        return float(self._state["time-pos"] or 0.0)
+
+    def seek(self, seconds: float, exact: bool = True) -> None:
+        self._state["time-pos"] = seconds
+        try:
+            self.player.command_async("seek", str(max(0.0, seconds)),
+                                      "absolute" if exact else "absolute+keyframes")
+        except Exception:
+            pass
+
+    @property
+    def volume(self) -> int:
+        return int(round(float(self._state["volume"])))
+
+    def set_volume(self, volume: int) -> None:
+        volume = max(0, min(100, volume))
+        self._state["volume"] = volume
+        self._set("volume", volume)
+
+    def set_zoom(self, zoom: float) -> None:
+        if abs(zoom - self.zoom) > 1e-3:
+            self.zoom = zoom
+            self._set("video-zoom", f"{math.log2(zoom):.4f}")
+
     def set_muted(self, muted: bool) -> None:
         if muted != self._muted:
             self._muted = muted
-            self.player.mute = muted
-
-    def position(self) -> float:
-        try:
-            return float(self.player.time_pos or 0.0)
-        except Exception:
-            return 0.0
+            self._set("mute", muted)
 
     def sample(self) -> Sample | None:
         """Cumulative dropped-frame counters, or None if nothing is playing."""
         if not self._active:
             return None
-        p = self.player
-        try:
-            dropped = int(p.frame_drop_count or 0) + int(p.decoder_frame_drop_count or 0)
-            fps = float(p.container_fps or p.estimated_vf_fps or 30.0)
-        except Exception:
-            return None
-        return Sample(dropped, fps)
+        st = self._state
+        dropped = int(st["frame-drop-count"] or 0) + int(st["decoder-frame-drop-count"] or 0)
+        return Sample(dropped, float(st["container-fps"] or 30.0))
 
     def move_to(self, rect: QRect, animate: bool) -> None:
         if self._anim:

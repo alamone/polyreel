@@ -1,18 +1,20 @@
 # Polyreel
 
-![Polyreel playing videos of different shapes at once, with its three playlists open](docs/screenshot.jpg)
+![Polyreel playing videos of different shapes at once, with its three playlists open](docs/polyreel-window.jpg)
 
 Play a whole folder of videos **at the same time**, packed into one window like a
 masonry wall. Landscape, portrait, square and ultrawide videos all keep their shape
-and stay roughly the same size, fitted together like puzzle pieces.
+and stay roughly the same size, fitted together like puzzle pieces to fill the window.
 
-- **Smart packing.** Videos are arranged in a guillotine tiling (nested rows and
-  columns). Every video keeps its aspect ratio, and no video is allowed to dominate:
-  sizes stay within about 1.5x of each other. To make mixed shapes fit, a tile may
-  be up to 1.5x wider or taller than its video, with thin black bars. Within that,
-  a search (seeded with justified rows/columns, refined by simulated annealing)
-  covers as much of the window as it can. When one video ends, its replacement
-  takes over the same spot, so the rest of the wall doesn't jump around.
+- **Smart packing.** Videos are arranged in nested rows and columns that span the
+  whole window, and no video is allowed to dominate: sizes stay within about 1.5x
+  of each other. Where a tile ends up a slightly different shape from its video,
+  the video is enlarged to fill it, trimming up to 15% off its edges (adjustable,
+  or off); only beyond that do thin black bars appear. A search (seeded with
+  justified rows/columns, refined by simulated annealing) finds the arrangement
+  that shows the most picture while avoiding big bars on any one video. When one
+  video ends, its replacement takes over the same spot, so the rest of the wall
+  doesn't jump around.
 - **Your limits.** *Max simultaneous videos* and *Smallest video size* (as a % of
   the window area). Videos that would break either limit wait in the queue.
   The first time you add videos, an optional **benchmark** plays your own files
@@ -28,11 +30,17 @@ and stay roughly the same size, fitted together like puzzle pieces.
   the wall, which shrinks to fit above them; close them all to get the full
   window back. Drag to reorder the queue, double-click to play next / focus /
   replay, right-click for more, Delete to remove.
-- **Done with a video?** Hover over it and click the **✕** in its corner to move it
-  straight to *Played*; the next queued video takes its place.
+- **Hover controls.** Hovering over a video shows a seek bar, play/pause, its time
+  and its own volume and mute along the bottom, plus a **✕** in the corner that
+  moves it straight to *Played* (the next queued video takes its place).
 - **Endless playback** (optional): when the queue runs out, everything already
   played is queued again, so the wall never empties.
-- Sound follows the mouse (the video under the pointer is unmuted); optional.
+- **Sound modes.** *Video under the mouse* (default): everything is muted except
+  the video you hover, at its own volume. *All videos at once*: new videos start
+  at full volume. *Silent*: new videos start muted. In every mode a video's own
+  mute and volume controls win. Press **M** to switch.
+- **Video only.** Folders are scanned for video files; animated GIFs and PNGs
+  count, still images (GIF, PNG, JPEG, WebP…) and audio-only files are skipped.
 
 ## Running it
 
@@ -62,6 +70,7 @@ python -m polyreel [video files or folders...]
 | | |
 |---|---|
 | Click a video | Focus it (pause others, fill the window) / click again to go back |
+| Hover a video | Seek bar, play/pause, volume and mute for that video |
 | ✕ on a video (on hover) | Move it to *Played* now |
 | Right-click | Menu: focus, skip, add, settings, benchmark |
 | Mouse at bottom edge | Show the playlist bar; click a list to dock it open |
@@ -69,6 +78,7 @@ python -m polyreel [video files or folders...]
 | F, F11, double-click empty space | Fullscreen |
 | Esc | Leave focus → leave fullscreen; cancels a running benchmark |
 | N | Skip the video under the mouse |
+| M | Switch sound mode (under the mouse → all → silent) |
 | O / Ctrl+O | Add files / add a folder (or drag & drop onto the window) |
 | Ctrl+, | Settings |
 
@@ -79,6 +89,8 @@ python -m polyreel [video files or folders...]
 | Max simultaneous videos | Hard cap on concurrent streams. Use **Benchmark…** to measure. |
 | Smallest video size | No video is shrunk below this % of the window area (25% ≈ 2×2 grid, 11% ≈ 3×3, 6% ≈ 4×4, 4% ≈ 5×5). |
 | Queue look-ahead | 1 = strict queue order. N > 1 lets one of the next N videos jump ahead if its shape fits the free space better. |
+| Crop edges to fill gaps | How much of a video's width or height may be trimmed so it fills its tile (default 15%; 0% always shows whole videos with bars). |
+| Sound | Video under the mouse / All videos at once / Silent (see above). |
 | Hardware decoding | `auto-safe` (default) offloads decoding to the GPU, which allows far more streams. |
 | Endless playback | When the queue runs out, queue everything already played again. |
 | Gap, shuffle, light position, tray icon | As named. |
@@ -103,8 +115,8 @@ Run the tests with `pip install pytest && python -m pytest`.
 ## Notes
 
 - Each video is its own libmpv instance rendering into a native child window,
-  so decoding and rendering stay in mpv (hardware-accelerated) and every format
-  mpv supports works.
+  so decoding and rendering stay in mpv (hardware-accelerated) and any video
+  format mpv can decode plays.
 - Overlays (the playlist drawer, the light, the ✕) are native windows stacked above the
   videos; they are opaque rather than translucent for that reason.
 - The benchmark uses your own files, because a 4K HEVC file and a 480p H.264 file

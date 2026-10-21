@@ -9,7 +9,8 @@ from __future__ import annotations
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout, QLabel,
-                               QListWidget, QListWidgetItem, QMenu, QToolButton,
+                               QListWidget, QListWidgetItem, QMenu, QSlider, QStyle,
+                               QToolButton,
                                QVBoxLayout, QWidget)
 
 from .perf import GREEN, IDLE, RED, YELLOW
@@ -151,6 +152,153 @@ class CloseButton(QWidget):
         p.drawLine(QPointF(m, m), QPointF(self.SIZE - m, self.SIZE - m))
         p.drawLine(QPointF(self.SIZE - m, m), QPointF(m, self.SIZE - m))
         p.end()
+
+
+CONTROLS_STYLE = """
+QFrame#controls { background: #141418; border-top: 1px solid #2c2c33; }
+QToolButton { color: #eee; background: transparent; border: none; padding: 2px 6px; font-size: 14px; }
+QToolButton:hover { background: #2a2a31; border-radius: 4px; }
+QLabel { color: #bbb; font-size: 11px; }
+QSlider::groove:horizontal { height: 4px; background: #3a3a42; border-radius: 2px; }
+QSlider::sub-page:horizontal { background: #4f8cff; border-radius: 2px; }
+QSlider::handle:horizontal { background: #f2f2f5; width: 12px; margin: -5px 0; border-radius: 6px; }
+"""
+
+
+def media_icon(kind: str, size: int = 32) -> QIcon:
+    """Light glyphs for the dark control strip (the style's own icons are dark)."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#f2f2f5"))
+    s = size / 32
+    if kind == "Play":
+        path = QPainterPath()
+        path.moveTo(10 * s, 7 * s)
+        path.lineTo(25 * s, 16 * s)
+        path.lineTo(10 * s, 25 * s)
+        path.closeSubpath()
+        p.drawPath(path)
+    elif kind == "Pause":
+        p.drawRoundedRect(QRectF(9 * s, 7 * s, 5 * s, 18 * s), 1.5 * s, 1.5 * s)
+        p.drawRoundedRect(QRectF(18 * s, 7 * s, 5 * s, 18 * s), 1.5 * s, 1.5 * s)
+    else:
+        speaker = QPainterPath()
+        for x, y in ((5, 12), (10, 12), (17, 6), (17, 26), (10, 20), (5, 20)):
+            (speaker.lineTo if speaker.elementCount() else speaker.moveTo)(x * s, y * s)
+        speaker.closeSubpath()
+        p.drawPath(speaker)
+        pen = QPen(QColor("#f2f2f5"), 2.2 * s)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        if kind == "VolumeMuted":
+            p.drawLine(QPointF(21 * s, 12 * s), QPointF(28 * s, 20 * s))
+            p.drawLine(QPointF(28 * s, 12 * s), QPointF(21 * s, 20 * s))
+        else:
+            p.drawArc(QRectF(13 * s, 10 * s, 10 * s, 12 * s), -60 * 16, 120 * 16)
+            p.drawArc(QRectF(13 * s, 6 * s, 15 * s, 20 * s), -60 * 16, 120 * 16)
+    p.end()
+    return QIcon(pm)
+
+
+class JumpSlider(QSlider):
+    """A slider that jumps to wherever its track is clicked (then drags)."""
+
+    def mousePressEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton:
+            value = QStyle.sliderValueFromPosition(
+                self.minimum(), self.maximum(), round(e.position().x()), max(1, self.width()))
+            self.setValue(value)
+        super().mousePressEvent(e)
+
+
+class TileControls(QFrame):
+    """Play/pause, seek bar, time and volume for the video under the mouse."""
+
+    toggle_pause = Signal()
+    seek = Signal(float, bool)      # seconds, exact (False while dragging)
+    volume = Signal(int)            # 0-100
+    mute_toggled = Signal()
+    HEIGHT = 34
+    SEEK_STEPS = 1000
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        _native(self)
+        self.setObjectName("controls")
+        self.setStyleSheet(CONTROLS_STYLE)
+        self.setAutoFillBackground(True)
+        self.setFixedHeight(self.HEIGHT)
+        self.duration = 0.0
+
+        self.icons = {name: media_icon(name) for name in ("Play", "Pause", "Volume", "VolumeMuted")}
+        self._paused = False
+        self.play = QToolButton(icon=self.icons["Pause"])
+        self.play.setToolTip("Pause / play this video")
+        self.play.clicked.connect(self.toggle_pause.emit)
+        self.bar = JumpSlider(Qt.Horizontal, minimum=0, maximum=self.SEEK_STEPS)
+        self.bar.setToolTip("Seek")
+        self.bar.valueChanged.connect(self._bar_changed)
+        self.bar.sliderReleased.connect(lambda: self.seek.emit(self._seconds(self.bar.value()), True))
+        self.time = QLabel("0:00")
+        self.speaker = QToolButton(icon=self.icons["Volume"])
+        self.speaker.setToolTip("Mute / unmute this video")
+        self.speaker.clicked.connect(self.mute_toggled.emit)
+        self.vol = JumpSlider(Qt.Horizontal, minimum=0, maximum=100, value=100)
+        self.vol.setToolTip("Volume of this video")
+        self.vol.setFixedWidth(70)
+        self.vol.valueChanged.connect(self._volume_changed)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(4, 0, 8, 0)
+        row.setSpacing(6)
+        row.addWidget(self.play)
+        row.addWidget(self.bar, 1)
+        row.addWidget(self.time)
+        row.addWidget(self.speaker)
+        row.addWidget(self.vol)
+
+    @property
+    def busy(self) -> bool:
+        return self.bar.isSliderDown() or self.vol.isSliderDown()
+
+    def _seconds(self, value: int) -> float:
+        return self.duration * value / self.SEEK_STEPS
+
+    def _bar_changed(self, value: int) -> None:
+        # User changes only (playback updates block signals): seek roughly
+        # while dragging, exactly on a click or when the drag ends.
+        self.seek.emit(self._seconds(value), not self.bar.isSliderDown())
+
+    def _volume_changed(self, v: int) -> None:
+        self.volume.emit(v)
+
+    def update_state(self, position: float, duration: float, paused: bool, volume: int,
+                     muted: bool) -> None:
+        self.duration = duration or 0.0
+        if not self.bar.isSliderDown():
+            self.bar.blockSignals(True)
+            self.bar.setValue(round(self.SEEK_STEPS * position / self.duration) if self.duration else 0)
+            self.bar.blockSignals(False)
+        self.time.setText(f"{fmt_time(position) or '0:00'} / {fmt_time(duration) or '?'}")
+        if paused != self._paused:
+            self._paused = paused
+            self.play.setIcon(self.icons["Play" if paused else "Pause"])
+        if not self.vol.isSliderDown() and self.vol.value() != volume:
+            self.vol.blockSignals(True)
+            self.vol.setValue(volume)
+            self.vol.blockSignals(False)
+        silent = muted or volume == 0
+        if silent != getattr(self, "_silent", None):
+            self._silent = silent
+            self.speaker.setIcon(self.icons["VolumeMuted" if silent else "Volume"])
+            self.speaker.setToolTip("Unmute this video" if silent else "Mute this video")
+        # Narrow videos drop the volume slider and then the time.
+        self.vol.setVisible(self.width() >= 300)
+        self.time.setVisible(self.width() >= 200)
 
 
 class _List(QListWidget):

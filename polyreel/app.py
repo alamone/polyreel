@@ -10,18 +10,18 @@ from dataclasses import dataclass, field
 from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QCursor, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (QApplication, QFileDialog, QLabel, QMainWindow,
-                               QMenu, QMessageBox, QSystemTrayIcon, QWidget)
+                               QMenu, QMessageBox, QSystemTrayIcon, QToolTip, QWidget)
 
 from . import layout as L
 from .perf import IDLE, BenchmarkPlan, PerfMonitor
-from .playlist import VIDEO_EXTENSIONS, Item, Playlists, expand_paths
-from .probe import Prober
+from .playlist import PLAYABLE_EXTENSIONS, Item, Playlists, expand_paths
+from .probe import NOT_VIDEO, Prober
 from .scheduler import DEFAULT_ASPECT, plan
-from .settings import Settings, SettingsDialog
+from .settings import SOUND_MODES, Settings, SettingsDialog
 from .tile import VideoTile
-from .ui import BAR_HEIGHT, CloseButton, Drawer, TrafficLight, light_icon
+from .ui import BAR_HEIGHT, CloseButton, Drawer, TileControls, TrafficLight, light_icon
 
-HOVER_ZONE = 56        # px from the bottom edge that reveals the drawer
+HOVER_ZONE = 24        # px from the bottom edge that reveals the drawer
 HIDE_DELAY_MS = 700
 EMPTY_TEXT = ("Drop videos or folders here\n\n"
               "O  add files     Ctrl+O  add a folder     Ctrl+,  settings")
@@ -106,6 +106,13 @@ class MainWindow(QMainWindow):
         self.close_btn.hide()
         self.close_btn.clicked.connect(self._close_clicked)
         self._close_target: VideoTile | None = None
+        self.controls = TileControls(self.stage)
+        self.controls.hide()
+        self.controls.toggle_pause.connect(self._controls_pause)
+        self.controls.seek.connect(lambda s, exact: self._controls_target and self._controls_target.seek(s, exact))
+        self.controls.volume.connect(self._controls_volume)
+        self.controls.mute_toggled.connect(self._controls_mute)
+        self._controls_target: VideoTile | None = None
         self.light.clicked.connect(self.open_settings)
         self.perf = PerfMonitor()
 
@@ -115,6 +122,9 @@ class MainWindow(QMainWindow):
         self.prober = Prober(self)
         self.prober.probed.connect(self._probed)
 
+        self._skipped = 0
+        self._skipped_timer = QTimer(self, singleShot=True, interval=800)
+        self._skipped_timer.timeout.connect(self._report_skipped)
         self._schedule_timer = QTimer(self, singleShot=True, interval=120)
         self._schedule_timer.timeout.connect(self.schedule)
         self._lists_timer = QTimer(self, singleShot=True, interval=150)
@@ -144,6 +154,7 @@ class MainWindow(QMainWindow):
                          (("Ctrl+O",), self.add_folder_dialog),
                          (("Ctrl+,",), self.open_settings),
                          (("N",), self.skip_under_cursor),
+                         (("M",), self.cycle_sound),
                          (("Ctrl+Q",), self.close)):
             for k in keys:
                 QShortcut(QKeySequence(k), self, activated=fn)
@@ -188,7 +199,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(1500, self._offer_benchmark)
 
     def add_files_dialog(self) -> None:
-        exts = " ".join(f"*{e}" for e in sorted(VIDEO_EXTENSIONS))
+        exts = " ".join(f"*{e}" for e in sorted(PLAYABLE_EXTENSIONS))
         files, _ = QFileDialog.getOpenFileNames(self, "Add videos", "", f"Videos ({exts});;All files (*)")
         self.add_paths(files)
 
@@ -204,11 +215,27 @@ class MainWindow(QMainWindow):
     def dropEvent(self, e) -> None:
         self.add_paths([u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()])
 
+    def _report_skipped(self) -> None:
+        n, self._skipped = self._skipped, 0
+        if n:
+            QToolTip.showText(self.mapToGlobal(self.rect().center()),
+                              f"Skipped {n} file{'s' * (n != 1)} that "
+                              f"{'aren' if n != 1 else 'isn'}'t video (still images, audio, ...)",
+                              self, QRect(), 3000)
+
     def _probed(self, item_id: int, aspect, duration, error) -> None:
         it = self.pl.find(item_id)
         if it is None:
             return
         it.aspect, it.duration, it.probed = aspect, duration, True
+        if error == NOT_VIDEO:
+            # Still images and the like are dropped quietly, with a short note.
+            self.pl.remove(it)
+            self._skipped += 1
+            self._skipped_timer.start()
+            self._update_message()
+            self.schedule_soon()
+            return
         if error:
             it.error = error
             if it in self.pl.queued:
@@ -242,7 +269,7 @@ class MainWindow(QMainWindow):
         s = self.settings
         w, h = self.stage_size()
         p = plan(self.pl.playing, self.pl.queued, w, h, s.max_streams, s.min_area,
-                 s.lookahead, prev=self.layout_)
+                 s.lookahead, prev=self.layout_, crop=s.crop)
         for it in p.demote:
             tile = self.tiles.pop(it.id)
             pos = tile.position()
@@ -253,6 +280,7 @@ class MainWindow(QMainWindow):
             tile = self._acquire()
             self.tiles[it.id] = tile
             tile.load(it, start=it.resume_pos, hwdec=s.hwdec)
+            tile.user_muted = s.sound == "silent"   # new videos start muted in silent mode
             tile.set_paused(self.paused_all)
         self.layout_ = p.layout
         self._apply_layout(animate=True)
@@ -298,8 +326,15 @@ class MainWindow(QMainWindow):
         for item_id, r in lay.rects.items():
             tile = self.tiles.get(item_id)
             if tile is not None and tile is not self.focus_tile:
-                tile.move_to(self._rect_for(r, sx, sy), animate)
+                self._place_tile(tile, self._rect_for(r, sx, sy), animate)
         self._place_overlays()
+
+    def _place_tile(self, tile: VideoTile, rect: QRect, animate: bool) -> None:
+        """Move a tile and zoom its video to fill the cell (within the crop limit)."""
+        aspect = tile.item.aspect if tile.item and tile.item.aspect else None
+        if aspect:
+            tile.set_zoom(L.zoom(rect.width() / max(1, rect.height()), aspect, self.settings.crop))
+        tile.move_to(rect, animate)
 
     def stage_resized(self) -> None:
         if self.focus_tile:
@@ -365,6 +400,7 @@ class MainWindow(QMainWindow):
                 t.set_paused(True)
         tile.set_paused(False)
         tile.raise_()
+        tile.set_zoom(1.0)   # show the whole picture when focused
         tile.move_to(self.video_area(), animate=True)
         self._place_overlays()
         self._cursor_tick()
@@ -481,7 +517,10 @@ class MainWindow(QMainWindow):
             return
         dlg = SettingsDialog(self.settings, self)
         if dlg.exec():
+            old_sound = self.settings.sound
             dlg.apply_to(self.settings)
+            if self.settings.sound != old_sound:
+                self._set_sound_mode(self.settings.sound)
             self.settings.save()
             self._setup_tray()
             self._place_overlays()
@@ -551,16 +590,43 @@ class MainWindow(QMainWindow):
 
         if self.bench:
             self.close_btn.hide()
+            self.controls.hide()
             return
         hovered = self.tile_under_cursor() if inside and not over_drawer else None
+        if self.controls.busy:
+            hovered = self._controls_target   # keep them while dragging a slider
         self._show_close(hovered)
+        self._show_controls(hovered)
 
-        # Audio follows the mouse (or the focused video).
-        target = self.focus_tile
-        if target is None and self.settings.hover_audio:
-            target = hovered
+        self._apply_sound(hovered)
+
+    def _apply_sound(self, hovered: VideoTile | None) -> None:
+        """Each video's own mute button wins.  Beyond that, in "hover" mode
+        only the video under the mouse (or the focused one) is heard; in
+        "all" and "silent" modes every video not muted by hand is heard (the
+        mode only decides whether new videos start muted)."""
+        target = self.focus_tile or hovered
         for t in self.tiles.values():
-            t.set_muted(t is not target)
+            audible = not t.user_muted
+            if self.settings.sound == "hover":
+                audible = audible and t is target
+            t.set_muted(not audible)
+
+    def _set_sound_mode(self, mode: str) -> None:
+        """Switching modes resets every video to that mode's starting state."""
+        self.settings.sound = mode
+        for t in self.tiles.values():
+            t.user_muted = mode == "silent"
+        self._cursor_tick()
+
+    def cycle_sound(self) -> None:
+        modes = [k for k, _ in SOUND_MODES]
+        s = self.settings
+        self._set_sound_mode(modes[(modes.index(s.sound) + 1) % len(modes)] if s.sound in modes else modes[0])
+        s.save()
+        QToolTip.showText(self.mapToGlobal(self.rect().center()),
+                          "Sound: " + dict(SOUND_MODES)[s.sound], self, QRect(), 1500)
+        self._cursor_tick()
 
     def _show_close(self, tile: VideoTile | None) -> None:
         """Put the "X" in the top-right corner of the video under the mouse."""
@@ -581,16 +647,59 @@ class MainWindow(QMainWindow):
             btn.show()
         btn.raise_()
 
+    def _show_controls(self, tile: VideoTile | None) -> None:
+        """Seek bar and volume along the bottom of the video under the mouse."""
+        c = self.controls
+        if tile is None or tile.item is None:
+            if not c.underMouse() and not c.busy:
+                c.hide()
+                self._controls_target = None
+            return
+        g = self._video_rect(tile)
+        y = g.bottom() + 1 - c.height()
+        # Stay clear of the strip at the window's bottom edge that reveals the playlists.
+        if not self.drawer.expanded:
+            y = min(y, self.stage.height() - HOVER_ZONE - c.height())
+        c.setGeometry(g.x(), max(g.y(), y), g.width(), c.height())
+        self._controls_target = tile
+        c.update_state(tile.position(), tile.duration(), tile.paused, tile.volume, tile.user_muted)
+        if not c.isVisible():
+            c.show()
+        c.raise_()
+        self.close_btn.raise_()
+
+    def _controls_volume(self, volume: int) -> None:
+        tile = self._controls_target
+        if tile is not None:
+            tile.set_volume(volume)
+            if volume > 0:
+                tile.user_muted = False   # turning a muted video up unmutes it
+
+    def _controls_mute(self) -> None:
+        tile = self._controls_target
+        if tile is not None:
+            tile.user_muted = not tile.user_muted
+            if not tile.user_muted and tile.volume == 0:
+                tile.set_volume(100)
+
+    def _controls_pause(self) -> None:
+        tile = self._controls_target
+        if tile is not None:
+            tile.set_paused(not tile.paused)
+
     @staticmethod
     def _video_rect(tile: VideoTile) -> QRect:
-        """The part of a tile the picture covers (cells may be letterboxed)."""
+        """The part of a tile the picture covers: the fitted video, enlarged
+        by the tile's zoom and clipped to the tile."""
         g = tile.geometry()
         a = tile.item.aspect if tile.item and tile.item.aspect else g.width() / max(1, g.height())
         if g.width() / max(1, g.height()) > a:
-            w = round(g.height() * a)
-            return QRect(g.x() + (g.width() - w) // 2, g.y(), w, g.height())
-        h = round(g.width() / a)
-        return QRect(g.x(), g.y() + (g.height() - h) // 2, g.width(), h)
+            w, h = g.height() * a, g.height()
+        else:
+            w, h = g.width(), g.width() / a
+        w, h = w * tile.zoom, h * tile.zoom
+        r = QRect(round(g.center().x() - w / 2), round(g.center().y() - h / 2), round(w), round(h))
+        return r.intersected(g)
 
     def _close_clicked(self) -> None:
         tile = self._close_target
@@ -667,9 +776,9 @@ class MainWindow(QMainWindow):
         b = self.bench
         w, h = self.stage_size()
         items = [(i, t.item.aspect or DEFAULT_ASPECT) for i, t in enumerate(b.tiles)]
-        b.layout = L.solve(items, w, h, effort=0.3)
+        b.layout = L.solve(items, w, h, effort=0.3, crop=self.settings.crop)
         for i, t in enumerate(b.tiles):
-            t.move_to(self._rect_for(b.layout.rects[i]), animate=False)
+            self._place_tile(t, self._rect_for(b.layout.rects[i]), animate=False)
 
     def _bench_step(self) -> None:
         b = self.bench

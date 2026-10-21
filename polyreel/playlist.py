@@ -13,6 +13,10 @@ VIDEO_EXTENSIONS = {
     ".mpeg", ".m2ts", ".mts", ".ts", ".3gp", ".ogv", ".vob", ".divx", ".f4v",
     ".asf", ".rm", ".rmvb", ".y4m",
 }
+# Image formats that can be animated.  They are only kept if probing finds
+# more than one frame; still images (and JPEGs, which never move) are skipped.
+ANIMATED_IMAGE_EXTENSIONS = {".gif", ".png", ".apng", ".webp", ".avif"}
+PLAYABLE_EXTENSIONS = VIDEO_EXTENSIONS | ANIMATED_IMAGE_EXTENSIONS
 
 _ids = itertools.count(1)
 
@@ -42,17 +46,22 @@ class Item:
         return "square"
 
 
+def is_candidate(path: str) -> bool:
+    """Worth probing: a video, or an image format that might be animated."""
+    return os.path.splitext(path)[1].lower() in PLAYABLE_EXTENSIONS
+
+
 def expand_paths(paths: Iterable[str]) -> list[str]:
-    """Files are taken as-is; folders are scanned recursively for videos."""
+    """Video files among ``paths``; folders are scanned recursively."""
     out: list[str] = []
     for p in paths:
         if os.path.isdir(p):
             for root, dirs, files in os.walk(p):
                 dirs.sort(key=str.lower)
                 for f in sorted(files, key=str.lower):
-                    if os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS:
+                    if is_candidate(f):
                         out.append(os.path.join(root, f))
-        elif os.path.isfile(p):
+        elif os.path.isfile(p) and is_candidate(p):
             out.append(p)
     return out
 

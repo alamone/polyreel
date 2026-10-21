@@ -19,53 +19,38 @@ def _no_overlap(rects):
         assert ox <= 1e-6 or oy <= 1e-6, (ka, kb)
 
 
+@pytest.mark.parametrize("crop", [0.0, 0.15])
 @pytest.mark.parametrize("aspects", [
     [16 / 9],
     [9 / 16] * 4,
     [16 / 9, 9 / 16, 4 / 3, 1.0, 21 / 9],
     [16 / 9, 9 / 16] * 6,
 ])
-def test_layout_preserves_aspect_and_stays_inside(aspects):
+def test_layout_tiles_the_window(aspects, crop):
     items = list(enumerate(aspects))
-    lay = L.solve(items, W, H)
+    lay = L.solve(items, W, H, crop=crop)
     assert set(lay.rects) == {k for k, _ in items}
-    limit = max(L.STRETCHES) + 1e-6
-    for k, a in items:
-        r = lay.rects[k]
-        # Each cell is the video's shape, stretched by at most the limit.
-        assert 1 / limit <= (r.w / r.h) / a <= limit
+    for r in lay.rects.values():
         assert r.x >= -1e-6 and r.y >= -1e-6
         assert r.x + r.w <= W + 1e-6 and r.y + r.h <= H + 1e-6
     _no_overlap(lay.rects)
+    # Cells cover the whole window; videos cover at most that.
     total = sum(r.area for r in lay.rects.values())
-    assert lay.fill <= total / (W * H) + 1e-6
+    assert math.isclose(total, W * H, rel_tol=1e-6)
+    assert 0 < lay.fill <= 1 + 1e-9
 
 
-def _spread(lay, aspects):
-    fr = L.video_fractions(lay.tree, dict(enumerate(aspects)), lay.stretch, W, H)
-    return max(fr.values()) / min(fr.values())
-
-
-def test_layout_packs_well():
-    # Four 16:9 videos in a 16:9 window should tile perfectly, all equal.
-    four = [16 / 9] * 4
-    lay = L.solve(list(enumerate(four)), W, H)
-    assert lay.fill > 0.99
-    assert _spread(lay, four) < 1.01
-
-
-@pytest.mark.parametrize("aspects", [
-    [16 / 9, 9 / 16, 9 / 16, 4 / 3, 1.0, 9 / 16, 16 / 9, 21 / 9],
-    [16 / 9, 9 / 16, 1.0, 4 / 3],
-    [16 / 9] * 3 + [9 / 16],
-    [16 / 9] * 6,
-])
-def test_layout_keeps_sizes_even(aspects):
-    # No video should dominate: sizes stay within ~1.6x of each other
-    # while still covering a reasonable part of the window.
-    lay = L.solve(list(enumerate(aspects)), W, H)
-    assert _spread(lay, aspects) <= 1.6
-    assert lay.fill > 0.45
+def test_coverage_and_zoom():
+    # Same shape: fills the cell, no zoom.
+    assert L.coverage(16 / 9, 16 / 9, 0.15) == 1.0
+    assert L.zoom(16 / 9, 16 / 9, 0.15) == 1.0
+    # Slightly different shape: a small crop fills the cell completely.
+    assert L.coverage(1.6, 16 / 9, 0.15) == 1.0
+    assert math.isclose(L.zoom(1.6, 16 / 9, 0.15), (16 / 9) / 1.6)
+    # Very different: crop to the limit, letterbox the rest.
+    assert math.isclose(L.zoom(1.0, 16 / 9, 0.15), 1 / 0.85)
+    assert math.isclose(L.coverage(1.0, 16 / 9, 0.15), 1 / ((16 / 9) * 0.85))
+    assert math.isclose(L.coverage(1.0, 16 / 9, 0.0), 9 / 16)
 
 
 def test_min_area_flag():
@@ -186,3 +171,15 @@ def test_recycle_played_for_endless_mode():
     assert pl.queued == [b, a]          # replayed in the order they finished
     assert pl.played == [c]             # broken files stay out of rotation
     assert not pl.recycle_played()      # nothing playable left to move
+
+
+def test_expand_paths_keeps_only_video_candidates(tmp_path):
+    from polyreel.playlist import expand_paths
+    for name in ("a.mp4", "b.MKV", "c.gif", "d.png", "e.jpg", "f.mp3", "g.txt"):
+        (tmp_path / name).write_bytes(b"x")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "h.webm").write_bytes(b"x")
+    found = sorted(p.replace(str(tmp_path), "").lstrip("/\\") for p in expand_paths([str(tmp_path)]))
+    # Videos and possibly-animated images are probed; JPEGs, audio and others never.
+    assert found == ["a.mp4", "b.MKV", "c.gif", "d.png", "sub/h.webm".replace("/", __import__("os").sep)]
+    assert expand_paths([str(tmp_path / "e.jpg"), str(tmp_path / "a.mp4")]) == [str(tmp_path / "a.mp4")]

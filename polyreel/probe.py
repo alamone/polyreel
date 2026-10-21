@@ -10,6 +10,8 @@ from PySide6.QtCore import QObject, Signal
 from .mpvlib import mpv
 
 TIMEOUT = 8.0
+NOT_VIDEO = "not a video"   # still image, audio only, ... (skipped, not an error)
+MIN_DURATION = 0.1          # anything shorter is a still frame, not a video
 
 
 class Prober(QObject):
@@ -64,9 +66,15 @@ class Prober(QObject):
             return None, None, None  # unknown shape; play it anyway with a default
         if outcome == "error":
             return None, None, "could not be opened"
+        tracks = player.track_list or []
+        if not any(t.get("type") == "video" for t in tracks):
+            player.command("stop")
+            return None, None, NOT_VIDEO          # e.g. audio only
 
         aspect = None
-        for track in player.track_list or []:
+        for track in tracks:
+            # mpv marks still pictures (and cover art) as images; animated
+            # GIFs and PNGs come through as ordinary video tracks.
             if track.get("type") != "video" or track.get("albumart") or track.get("image"):
                 continue
             w, h = track.get("demux-w"), track.get("demux-h")
@@ -78,6 +86,6 @@ class Prober(QObject):
             break
         duration = player.duration
         player.command("stop")
-        if aspect is None:
-            return None, duration, "no video track"
+        if aspect is None or (duration is not None and duration < MIN_DURATION):
+            return None, duration, NOT_VIDEO
         return aspect, duration, None

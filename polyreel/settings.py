@@ -15,8 +15,9 @@ class Settings:
     max_streams: int = 6
     min_area_pct: float = 4.0      # smallest video, as % of the window area
     gap: int = 2                   # pixels between videos
+    crop_pct: float = 15.0         # how much of a video's edges may be cropped to fill gaps
     lookahead: int = 4             # >1 lets a later queued video jump ahead if it fits better
-    hover_audio: bool = True       # play the sound of the video under the mouse
+    sound: str = "hover"           # "hover": video under the mouse, "all", or "silent"
     endless: bool = False
     shuffle_on_add: bool = False
     hwdec: str = "auto-safe"
@@ -28,6 +29,10 @@ class Settings:
     @property
     def min_area(self) -> float:
         return self.min_area_pct / 100.0
+
+    @property
+    def crop(self) -> float:
+        return self.crop_pct / 100.0
 
     @classmethod
     def load(cls) -> "Settings":
@@ -51,6 +56,11 @@ class Settings:
         qs = QSettings()
         for k, v in asdict(self).items():
             qs.setValue(k, v)
+
+
+SOUND_MODES = [("hover", "Video under the mouse"),
+               ("all", "All videos at once"),
+               ("silent", "Silent")]
 
 
 class SettingsDialog(QDialog):
@@ -79,11 +89,21 @@ class SettingsDialog(QDialog):
         self.min_area.setToolTip("A video is never shrunk below this size; extra videos wait in the queue instead.\n"
                                  "25% ≈ a 2×2 grid, 11% ≈ 3×3, 6% ≈ 4×4, 4% ≈ 5×5.")
         self.gap = QSpinBox(minimum=0, maximum=40, value=s.gap, suffix=" px")
+        self.crop = QDoubleSpinBox(minimum=0.0, maximum=30.0, decimals=0, singleStep=5.0,
+                                   suffix=" %", value=s.crop_pct)
+        self.crop.setToolTip("To fill the window without gaps, a video may be enlarged so up to this\n"
+                             "much of its width or height is cut off at the edges (half on each side).\n"
+                             "0% never crops: videos are shown whole with black bars around them.")
         self.lookahead = QSpinBox(minimum=1, maximum=50, value=s.lookahead)
         self.lookahead.setToolTip("1 = always play strictly in queue order.\n"
                                   "Higher values let one of the next N queued videos jump ahead "
                                   "when its shape fits the free space better.")
-        self.hover_audio = QCheckBox("Play the sound of the video under the mouse", checked=s.hover_audio)
+        self.sound = QComboBox()
+        for key, label in SOUND_MODES:
+            self.sound.addItem(label, key)
+        self.sound.setCurrentIndex(max(0, self.sound.findData(s.sound)))
+        self.sound.setToolTip("Which videos you hear. A focused video is heard unless Silent is chosen.\n"
+                              "Press M to switch modes.")
         self.endless = QCheckBox("Endless playback: when the queue runs out, "
                                  "queue everything already played again", checked=s.endless)
         self.shuffle = QCheckBox("Shuffle videos when adding them", checked=s.shuffle_on_add)
@@ -102,16 +122,18 @@ class SettingsDialog(QDialog):
         form.addRow("Max simultaneous videos", row)
         form.addRow("Smallest video size", self.min_area)
         form.addRow("Gap between videos", self.gap)
+        form.addRow("Crop edges to fill gaps, up to", self.crop)
         form.addRow("Queue look-ahead", self.lookahead)
+        form.addRow("Sound", self.sound)
         form.addRow("Hardware decoding", self.hwdec)
         form.addRow("Light position", self.corner)
 
         box = QVBoxLayout(self)
         box.addLayout(form)
-        for w in (self.hover_audio, self.endless, self.shuffle, self.show_light, self.tray):
+        for w in (self.endless, self.shuffle, self.show_light, self.tray):
             box.addWidget(w)
         hint = QLabel("Keys: Space pause all · F fullscreen · O add files · Ctrl+O add folder · "
-                      "Esc leave focus/fullscreen · N skip video under mouse")
+                      "Esc leave focus/fullscreen · N skip video under mouse · M sound mode")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: gray")
         box.addWidget(hint)
@@ -128,8 +150,9 @@ class SettingsDialog(QDialog):
         s.max_streams = self.max_streams.value()
         s.min_area_pct = self.min_area.value()
         s.gap = self.gap.value()
+        s.crop_pct = self.crop.value()
         s.lookahead = self.lookahead.value()
-        s.hover_audio = self.hover_audio.isChecked()
+        s.sound = self.sound.currentData()
         s.endless = self.endless.isChecked()
         s.shuffle_on_add = self.shuffle.isChecked()
         s.hwdec = self.hwdec.currentText()
