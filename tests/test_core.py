@@ -29,24 +29,43 @@ def test_layout_preserves_aspect_and_stays_inside(aspects):
     items = list(enumerate(aspects))
     lay = L.solve(items, W, H)
     assert set(lay.rects) == {k for k, _ in items}
+    limit = max(L.STRETCHES) + 1e-6
     for k, a in items:
         r = lay.rects[k]
-        assert math.isclose(r.w / r.h, a, rel_tol=1e-6)
+        # Each cell is the video's shape, stretched by at most the limit.
+        assert 1 / limit <= (r.w / r.h) / a <= limit
         assert r.x >= -1e-6 and r.y >= -1e-6
         assert r.x + r.w <= W + 1e-6 and r.y + r.h <= H + 1e-6
     _no_overlap(lay.rects)
     total = sum(r.area for r in lay.rects.values())
-    assert math.isclose(total / (W * H), lay.fill, rel_tol=1e-6)
+    assert lay.fill <= total / (W * H) + 1e-6
+
+
+def _spread(lay, aspects):
+    fr = L.video_fractions(lay.tree, dict(enumerate(aspects)), lay.stretch, W, H)
+    return max(fr.values()) / min(fr.values())
 
 
 def test_layout_packs_well():
-    # Four 16:9 videos in a 16:9 window should tile perfectly.
-    lay = L.solve(list(enumerate([16 / 9] * 4)), W, H)
+    # Four 16:9 videos in a 16:9 window should tile perfectly, all equal.
+    four = [16 / 9] * 4
+    lay = L.solve(list(enumerate(four)), W, H)
     assert lay.fill > 0.99
-    # Mixed portrait/landscape should still cover most of the window.
-    mixed = [16 / 9, 9 / 16, 9 / 16, 4 / 3, 1.0, 9 / 16, 16 / 9, 21 / 9]
-    lay = L.solve(list(enumerate(mixed)), W, H)
-    assert lay.fill > 0.85
+    assert _spread(lay, four) < 1.01
+
+
+@pytest.mark.parametrize("aspects", [
+    [16 / 9, 9 / 16, 9 / 16, 4 / 3, 1.0, 9 / 16, 16 / 9, 21 / 9],
+    [16 / 9, 9 / 16, 1.0, 4 / 3],
+    [16 / 9] * 3 + [9 / 16],
+    [16 / 9] * 6,
+])
+def test_layout_keeps_sizes_even(aspects):
+    # No video should dominate: sizes stay within ~1.6x of each other
+    # while still covering a reasonable part of the window.
+    lay = L.solve(list(enumerate(aspects)), W, H)
+    assert _spread(lay, aspects) <= 1.6
+    assert lay.fill > 0.45
 
 
 def test_min_area_flag():
@@ -153,3 +172,17 @@ def test_benchmark_plan():
         assert not b.done
         b.record(ratio)
     assert b.done and b.recommended == 4
+
+
+def test_recycle_played_for_endless_mode():
+    pl = Playlists()
+    a, b, c = pl.add(["/a.mp4", "/b.mp4", "/c.mp4"])
+    for it in (a, b, c):
+        pl.start(it)
+    pl.finish(b)
+    pl.finish(a)
+    pl.finish(c, error="could not be played")
+    assert pl.recycle_played()
+    assert pl.queued == [b, a]          # replayed in the order they finished
+    assert pl.played == [c]             # broken files stay out of rotation
+    assert not pl.recycle_played()      # nothing playable left to move

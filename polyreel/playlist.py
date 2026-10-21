@@ -155,12 +155,14 @@ class Playlists:
             self._changed()
 
     def recycle_played(self) -> bool:
-        """For repeat-all: move everything already played back to the queue."""
-        if not self.played:
+        """Endless playback: move everything already played (in the order it
+        was played) back to the queue.  Returns False if nothing could move."""
+        replay = [it for it in self.played if not it.error]
+        if not replay:
             return False
-        for it in self.played:
+        for it in replay:
             it.resume_pos = 0.0
-        self.queued.extend(it for it in self.played if not it.error)
+        self.queued.extend(replay)
         self.played = [it for it in self.played if it.error]
         self._changed()
         return True

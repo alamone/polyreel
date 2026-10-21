@@ -17,7 +17,7 @@ class Settings:
     gap: int = 2                   # pixels between videos
     lookahead: int = 4             # >1 lets a later queued video jump ahead if it fits better
     hover_audio: bool = True       # play the sound of the video under the mouse
-    repeat_all: bool = False
+    endless: bool = False
     shuffle_on_add: bool = False
     hwdec: str = "auto-safe"
     show_light: bool = True
@@ -84,7 +84,8 @@ class SettingsDialog(QDialog):
                                   "Higher values let one of the next N queued videos jump ahead "
                                   "when its shape fits the free space better.")
         self.hover_audio = QCheckBox("Play the sound of the video under the mouse", checked=s.hover_audio)
-        self.repeat_all = QCheckBox("Repeat all when the queue runs out", checked=s.repeat_all)
+        self.endless = QCheckBox("Endless playback: when the queue runs out, "
+                                 "queue everything already played again", checked=s.endless)
         self.shuffle = QCheckBox("Shuffle videos when adding them", checked=s.shuffle_on_add)
         self.hwdec = QComboBox()
         self.hwdec.addItems(["auto-safe", "auto", "no"])
@@ -107,7 +108,7 @@ class SettingsDialog(QDialog):
 
         box = QVBoxLayout(self)
         box.addLayout(form)
-        for w in (self.hover_audio, self.repeat_all, self.shuffle, self.show_light, self.tray):
+        for w in (self.hover_audio, self.endless, self.shuffle, self.show_light, self.tray):
             box.addWidget(w)
         hint = QLabel("Keys: Space pause all · F fullscreen · O add files · Ctrl+O add folder · "
                       "Esc leave focus/fullscreen · N skip video under mouse")
@@ -129,7 +130,7 @@ class SettingsDialog(QDialog):
         s.gap = self.gap.value()
         s.lookahead = self.lookahead.value()
         s.hover_audio = self.hover_audio.isChecked()
-        s.repeat_all = self.repeat_all.isChecked()
+        s.endless = self.endless.isChecked()
         s.shuffle_on_add = self.shuffle.isChecked()
         s.hwdec = self.hwdec.currentText()
         s.show_light = self.show_light.isChecked()

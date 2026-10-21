@@ -1,13 +1,18 @@
 """Aspect-preserving "masonry" packing of videos into a window.
 
 Every layout is a guillotine (slicing) tree: each internal node either places
-its two children side by side (``H``) or stacks them (``V``).  Because every
-leaf keeps its own aspect ratio, a whole tree has a single composite aspect
-ratio and packs with *no gaps inside it*; the only wasted space is the
-letterbox between the composite and the window.  The solver therefore
-searches for a tree whose composite shape matches the window while keeping
-tiles reasonably even in size, and (optionally) close to the previous layout
-so that tiles don't jump around when one video is swapped for another.
+its two children side by side (``H``) or stacks them (``V``).  Each leaf is a
+cell whose shape is the video's aspect ratio, optionally *stretched* a little
+wider or taller (the video is then letterboxed inside its cell).  With fixed
+shapes a whole tree has a single composite aspect ratio and packs with no
+gaps, but sizes are rigidly coupled: a portrait video beside a landscape one
+in a row must be ~3x smaller.  The stretch gives the solver enough slack to
+keep every video roughly the same size.
+
+The solver searches for a tree (and stretches) that covers as much of the
+window as possible while keeping video sizes even, and (optionally) stays
+close to the previous layout so tiles don't jump around when one video is
+swapped for another.
 
 This module has no Qt dependency so it can be unit-tested on its own.
 """
@@ -16,6 +21,7 @@ from __future__ import annotations
 
 import math
 import random
+import time
 from dataclasses import dataclass, field
 from typing import Hashable, Iterable, Sequence
 
@@ -26,10 +32,19 @@ V = "V"  # children stacked, sharing a width
 # a tuple ``(op, left, right)``.
 Tree = object
 
-# Score weights.  Fill (fraction of window covered) dominates; balance
-# keeps the smallest tile from being tiny compared to the average one.
-W_BALANCE = 0.35
+# How much a cell may differ in shape from its video (the video is
+# letterboxed inside); 1.5 means at most a third of a cell is black bars.
+STRETCHES = (1 / 1.5, 1 / 1.25, 1 / 1.12, 1.0, 1.12, 1.25, 1.5)
+# Videos may differ in size by up to SIZE_TOLERANCE x without penalty;
+# beyond that the score falls off steeply (power SIZE_PENALTY).
+SIZE_TOLERANCE = 1.5
+SIZE_PENALTY = 2.0
+W_STRETCH = 0.05   # mild preference for cells that match their video exactly
 W_DEFICIT = 4.0
+RESTARTS = 4
+# Keep the current arrangement unless another scores clearly better, so the
+# wall doesn't reshuffle when a video is replaced by one of similar shape.
+STICKY = 0.06
 W_STABILITY = 0.25
 
 
@@ -54,7 +69,9 @@ class Layout:
     tree: Tree | None
     rects: dict[Hashable, Rect] = field(default_factory=dict)
     fill: float = 0.0
-    min_area: float = 1.0  # smallest tile, as a fraction of the window area
+    min_area: float = 1.0  # smallest video, as a fraction of the window area
+    stretch: dict = field(default_factory=dict)  # cell shape / video shape
+    aspects: dict = field(default_factory=dict)  # video shapes
     score: float = 0.0
     valid: bool = True
     width: float = 0.0
@@ -83,23 +100,22 @@ def composite_aspect(node: Tree, aspects: dict) -> float:
     return a + b if node[0] == H else 1.0 / (1.0 / a + 1.0 / b)
 
 
-def _place(node: Tree, aspects: dict, x: float, y: float, w: float, h: float,
-           out: dict) -> float:
-    """Assign rects top-down.  Returns the node's aspect (for reuse)."""
+def _place(node: Tree, memo: dict, x: float, y: float, w: float, h: float,
+           out: dict) -> None:
+    """Assign rects top-down using precomputed subtree aspects."""
     if is_leaf(node):
         out[node] = Rect(x, y, w, h)
-        return aspects[node]
+        return
     op, left, right = node
-    la = composite_aspect(left, aspects)
+    la = memo[id(left)]
     if op == H:
         lw = h * la
-        _place(left, aspects, x, y, lw, h, out)
-        _place(right, aspects, x + lw, y, w - lw, h, out)
+        _place(left, memo, x, y, lw, h, out)
+        _place(right, memo, x + lw, y, w - lw, h, out)
     else:
         lh = w / la
-        _place(left, aspects, x, y, w, lh, out)
-        _place(right, aspects, x, y + lh, w, h - lh, out)
-    return w / h
+        _place(left, memo, x, y, w, lh, out)
+        _place(right, memo, x, y + lh, w, h - lh, out)
 
 
 def place(tree: Tree, aspects: dict, width: float, height: float) -> tuple[dict, float]:
@@ -107,13 +123,14 @@ def place(tree: Tree, aspects: dict, width: float, height: float) -> tuple[dict,
 
     Returns ``(rects, fill)`` where fill is the covered fraction of the window.
     """
-    a = composite_aspect(tree, aspects)
+    memo: dict = {}
+    a = _shapes(tree, aspects, memo)
     if a > width / height:
         fw, fh = width, width / a
     else:
         fw, fh = height * a, height
     rects: dict = {}
-    _place(tree, aspects, (width - fw) / 2, (height - fh) / 2, fw, fh, rects)
+    _place(tree, memo, (width - fw) / 2, (height - fh) / 2, fw, fh, rects)
     return rects, (fw * fh) / (width * height)
 
 
@@ -121,41 +138,67 @@ def place(tree: Tree, aspects: dict, width: float, height: float) -> tuple[dict,
 # Scoring
 
 
-def _leaf_fractions(node: Tree, aspects: dict, frac: float, out: list) -> float:
-    """Collect each leaf's share of the composite area.  Returns node aspect."""
+def cells(aspects: dict, stretch: dict) -> dict:
+    """Cell aspect ratios: each video's shape times its stretch."""
+    return {k: a * stretch.get(k, 1.0) for k, a in aspects.items()}
+
+
+def _shapes(node: Tree, shapes: dict, memo: dict) -> float:
+    """Composite aspect of every subtree, computed once (keyed by id)."""
     if is_leaf(node):
-        out.append(frac)
-        return aspects[node]
-    op, left, right = node
-    # Aspects of the children are needed before splitting the area.
-    la = composite_aspect(left, aspects)
-    ra = composite_aspect(right, aspects)
-    if op == H:
-        total = la + ra
-        lf, rf = la / total, ra / total
+        a = shapes[node]
     else:
-        total = 1.0 / la + 1.0 / ra
-        lf, rf = (1.0 / la) / total, (1.0 / ra) / total
-    _leaf_fractions(left, aspects, frac * lf, out)
-    _leaf_fractions(right, aspects, frac * rf, out)
-    return la + ra if op == H else 1.0 / total
+        l, r = _shapes(node[1], shapes, memo), _shapes(node[2], shapes, memo)
+        a = l + r if node[0] == H else l * r / (l + r)
+    memo[id(node)] = a
+    return a
+
+
+def _shares(node: Tree, memo: dict, frac: float, out: dict) -> None:
+    if is_leaf(node):
+        out[node] = frac
+        return
+    l, r = memo[id(node[1])], memo[id(node[2])]
+    # Side by side, areas split like the aspects; stacked, like their inverses.
+    lf = l / (l + r) if node[0] == H else r / (l + r)
+    _shares(node[1], memo, frac * lf, out)
+    _shares(node[2], memo, frac * (1.0 - lf), out)
+
+
+def video_fractions(tree: Tree, aspects: dict, stretch: dict,
+                    width: float, height: float) -> dict:
+    """Each video's visible area as a fraction of the window."""
+    memo: dict = {}
+    a = _shapes(tree, cells(aspects, stretch), memo)
+    r = width / height
+    fracs: dict = {}
+    _shares(tree, memo, a / r if a < r else r / a, fracs)
+    for k, f in fracs.items():
+        s = stretch.get(k, 1.0)
+        fracs[k] = f * min(s, 1.0 / s)
+    return fracs
 
 
 def evaluate(tree: Tree, aspects: dict, width: float, height: float,
-             min_area: float, prev: dict | None = None) -> tuple[float, float, float]:
-    """Return ``(score, fill, smallest_tile_fraction)`` for a tree."""
-    a = composite_aspect(tree, aspects)
-    r = width / height
-    fill = a / r if a < r else r / a
-    fracs: list[float] = []
-    _leaf_fractions(tree, aspects, fill, fracs)
-    smallest = min(fracs)
-    mean = sum(fracs) / len(fracs)
-    score = fill + W_BALANCE * (smallest / mean)
+             min_area: float, prev: dict | None = None,
+             stretch: dict | None = None) -> tuple[float, float, float]:
+    """Return ``(score, fill, smallest_video_fraction)``.
+
+    The score is the covered fraction of the window, scaled down sharply
+    once the largest video is more than SIZE_TOLERANCE x the smallest.
+    """
+    stretch = stretch or {}
+    fracs = video_fractions(tree, aspects, stretch, width, height)
+    fill = sum(fracs.values())
+    smallest, largest = min(fracs.values()), max(fracs.values())
+    evenness = min(1.0, SIZE_TOLERANCE * smallest / largest)
+    score = fill * evenness ** SIZE_PENALTY
+    if stretch:
+        score -= W_STRETCH * sum(abs(math.log(v)) for v in stretch.values()) / len(fracs)
     if min_area > 0 and smallest < min_area:
         score -= W_DEFICIT * (min_area - smallest) / min_area
     if prev:
-        score -= W_STABILITY * _displacement(tree, aspects, width, height, prev)
+        score -= W_STABILITY * _displacement(tree, cells(aspects, stretch), width, height, prev)
     return score, fill, smallest
 
 
@@ -262,28 +305,29 @@ def insert_beside(tree: Tree, target: Hashable, key: Hashable, aspects: dict) ->
             insert_beside(tree[2], target, key, aspects))
 
 
-def adapt(prev_tree: Tree | None, keys: Sequence[Hashable], aspects: dict,
-          width: float, height: float) -> Tree | None:
-    """Turn the previous tree into one over ``keys`` with minimal disruption.
+def adapt(prev: "Layout", keys: Sequence[Hashable], aspects: dict,
+          width: float, height: float) -> tuple[Tree, dict] | None:
+    """Turn the previous layout into one over ``keys`` with minimal disruption.
 
-    Departed tiles are reused for newcomers of similar shape; leftover
-    departures are removed and leftover newcomers split the biggest tiles.
+    Each departed tile is taken over by the newcomer closest in shape, with
+    its cell stretched to match the old cell so neighbours stay put.  Any
+    remaining departures are removed and remaining newcomers split the
+    biggest tiles.  Returns ``(tree, stretch)``.
     """
-    if prev_tree is None:
+    if prev is None or prev.tree is None:
         return None
-    keyset = set(keys)
-    old = [k for k in leaves(prev_tree) if k in aspects]
-    if len(old) != len(leaves(prev_tree)):
-        return None
-    gone = [k for k in old if k not in keyset]
+    old = leaves(prev.tree)
+    gone = [k for k in old if k not in set(keys)]
     new = [k for k in keys if k not in set(old)]
-    tree = prev_tree
-    # Swap departed tiles for newcomers with the closest aspect ratio.
+    stretch = {k: v for k, v in prev.stretch.items() if k in aspects}
+    tree = prev.tree
     for g in list(gone):
         if not new:
             break
-        best = min(new, key=lambda n: abs(math.log(aspects[n] / aspects[g])))
+        old_cell = prev.aspects.get(g, 1.0) * prev.stretch.get(g, 1.0)
+        best = min(new, key=lambda n: abs(math.log(aspects[n] / old_cell)))
         tree = replace_leaf(tree, g, best)
+        stretch[best] = min(STRETCHES, key=lambda f: abs(math.log(aspects[best] * f / old_cell)))
         new.remove(best)
         gone.remove(g)
     for g in gone:
@@ -292,10 +336,11 @@ def adapt(prev_tree: Tree | None, keys: Sequence[Hashable], aspects: dict,
         if tree is None:
             tree = n
             continue
-        rects, _ = place(tree, aspects, width, height)
+        shapes = cells(aspects, stretch)
+        rects, _ = place(tree, shapes, width, height)
         biggest = max(rects, key=lambda k: rects[k].area)
-        tree = insert_beside(tree, biggest, n, aspects)
-    return tree
+        tree = insert_beside(tree, biggest, n, shapes)
+    return tree, {k: v for k, v in stretch.items() if v != 1.0}
 
 
 # --------------------------------------------------------------------------
@@ -328,7 +373,7 @@ def _set(node: Tree, path: tuple, value: Tree) -> Tree:
     return tuple(parts)
 
 
-def _mutate(tree: Tree, rng: random.Random) -> Tree:
+def _mutate_tree(tree: Tree, rng: random.Random) -> Tree:
     keys = leaves(tree)
     move = rng.random()
     if move < 0.35 and len(keys) >= 2:
@@ -353,15 +398,37 @@ def _mutate(tree: Tree, rng: random.Random) -> Tree:
     return _set(rest, path, pair)
 
 
+def _mutate(state: tuple[Tree, dict], rng: random.Random) -> tuple[Tree, dict]:
+    tree, stretch = state
+    if rng.random() < 0.3:
+        # Make one cell a bit wider or taller than its video.
+        key = rng.choice(leaves(tree))
+        i = STRETCHES.index(stretch.get(key, 1.0))
+        j = min(len(STRETCHES) - 1, max(0, i + rng.choice((-1, 1))))
+        return tree, {**stretch, key: STRETCHES[j]}
+    return _mutate_tree(tree, rng), stretch
+
+
+def _towards_square(aspects: dict) -> dict:
+    """Seed stretch: widen portrait cells and narrow wide ones, which lets
+    mixed orientations share rows at more similar sizes."""
+    out = {}
+    for k, a in aspects.items():
+        out[k] = STRETCHES[-1] if a < 0.9 else STRETCHES[0] if a > 1.5 else 1.0
+    return out
+
+
 def solve(items: Sequence[tuple[Hashable, float]], width: float, height: float,
           min_area: float = 0.0, prev: Layout | None = None,
-          effort: float = 1.0, seed: int | None = None) -> Layout:
+          effort: float = 1.0, seed: int | None = None,
+          budget: float | None = 0.25) -> Layout:
     """Find a good layout for ``items`` (``(key, aspect)`` pairs).
 
-    ``min_area`` is the smallest allowed tile as a fraction of window area;
+    ``min_area`` is the smallest allowed video as a fraction of window area;
     the returned layout's ``valid`` flag says whether it was met.
     ``prev`` biases the result towards the previous arrangement.
-    ``effort`` scales the number of annealing steps (0 = seeds only).
+    ``effort`` scales the number of annealing steps (0 = seeds only);
+    ``budget`` caps the search time in seconds so the UI never stalls.
     """
     if not items or width <= 0 or height <= 0:
         return Layout(tree=None)
@@ -374,33 +441,62 @@ def solve(items: Sequence[tuple[Hashable, float]], width: float, height: float,
         prev_rects = {k: Rect(r.x * sx, r.y * sy, r.w * sx, r.h * sy)
                       for k, r in prev.rects.items()}
 
-    def score_of(tree: Tree) -> float:
-        return evaluate(tree, aspects, width, height, min_area, prev_rects)[0]
+    def score_of(state: tuple[Tree, dict]) -> float:
+        return evaluate(state[0], aspects, width, height, min_area, prev_rects, state[1])[0]
 
-    candidates = list(seeds(keys, aspects))
-    adapted = adapt(prev.tree if prev else None, keys, aspects, width, height)
+    plain, squarish = {}, _towards_square(aspects)
+    candidates = []
+    for tree in seeds(keys, aspects):
+        candidates += [(tree, plain), (tree, squarish)]
+    for tree in seeds(keys, cells(aspects, squarish)):
+        candidates.append((tree, squarish))
+    adapted = adapt(prev, keys, aspects, width, height)
     if adapted is not None:
         candidates.append(adapted)
-    best = max(candidates, key=score_of)
+    candidates.sort(key=score_of, reverse=True)
+    best = candidates[0]
     best_score = score_of(best)
 
+    # Anneal from a few of the best distinct starting points; the landscape
+    # is rugged enough that a single run often gets stuck.
     n = len(keys)
-    steps = int(effort * min(2500, 120 + 90 * n)) if n >= 2 else 0
-    if steps:
-        rng = random.Random(seed if seed is not None else hash(tuple(keys)) & 0xFFFFFFFF)
-        cur, cur_score = best, best_score
+    steps = int(effort * min(1500, 80 + 60 * n)) if n >= 2 else 0
+    starts: list = []
+    for c in candidates:
+        if len(starts) >= RESTARTS:
+            break
+        if all(c[0] != s[0] for s in starts):
+            starts.append(c)
+    rng = random.Random(seed if seed is not None else hash(tuple(keys)) & 0xFFFFFFFF)
+    deadline = time.monotonic() + budget if budget else None
+    for r, start in enumerate(starts if steps else ()):
+        cur, cur_score = start, score_of(start)
         t0, t1 = 0.06, 0.0005
+        # Each restart gets an equal share of whatever time is left.
+        stop = (time.monotonic() + (deadline - time.monotonic()) / (len(starts) - r)
+                if deadline else None)
         for i in range(steps):
+            if stop and i % 32 == 0 and time.monotonic() > stop:
+                break
             temp = t0 * (t1 / t0) ** (i / steps)
             cand = _mutate(cur, rng)
-            s = score_of(cand)
-            if s >= cur_score or rng.random() < math.exp((s - cur_score) / temp):
-                cur, cur_score = cand, s
-                if s > best_score:
-                    best, best_score = cand, s
+            sc = score_of(cand)
+            if sc >= cur_score or rng.random() < math.exp((sc - cur_score) / temp):
+                cur, cur_score = cand, sc
+                if sc > best_score:
+                    best, best_score = cand, sc
 
-    rects, fill = place(best, aspects, width, height)
-    smallest = min(r.area for r in rects.values()) / (width * height)
-    return Layout(tree=best, rects=rects, fill=fill, min_area=smallest,
+    if adapted is not None and best is not adapted:
+        a_score, _, a_small = evaluate(adapted[0], aspects, width, height, min_area,
+                                       prev_rects, adapted[1])
+        if a_score >= best_score - STICKY and a_small + 1e-9 >= min_area:
+            best, best_score = adapted, a_score
+
+    tree, stretch = best
+    rects, _ = place(tree, cells(aspects, stretch), width, height)
+    fracs = video_fractions(tree, aspects, stretch, width, height)
+    smallest = min(fracs.values())
+    return Layout(tree=tree, rects=rects, fill=sum(fracs.values()), min_area=smallest,
+                  stretch={k: v for k, v in stretch.items() if v != 1.0}, aspects=aspects,
                   score=best_score, valid=smallest + 1e-9 >= min_area,
                   width=width, height=height)

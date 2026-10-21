@@ -19,7 +19,7 @@ from .probe import Prober
 from .scheduler import DEFAULT_ASPECT, plan
 from .settings import Settings, SettingsDialog
 from .tile import VideoTile
-from .ui import BAR_HEIGHT, Drawer, TrafficLight, light_icon
+from .ui import BAR_HEIGHT, CloseButton, Drawer, TrafficLight, light_icon
 
 HOVER_ZONE = 56        # px from the bottom edge that reveals the drawer
 HIDE_DELAY_MS = 700
@@ -99,9 +99,13 @@ class MainWindow(QMainWindow):
         self.drawer.add_folder.connect(self.add_folder_dialog)
         self.drawer.open_settings.connect(self.open_settings)
         self.drawer.toggle_pause.connect(self.toggle_pause)
-        self.drawer.layout_changed.connect(self._place_overlays)
+        self.drawer.layout_changed.connect(self._drawer_changed)
 
         self.light = TrafficLight(self.stage)
+        self.close_btn = CloseButton(self.stage)
+        self.close_btn.hide()
+        self.close_btn.clicked.connect(self._close_clicked)
+        self._close_target: VideoTile | None = None
         self.light.clicked.connect(self.open_settings)
         self.perf = PerfMonitor()
 
@@ -217,8 +221,19 @@ class MainWindow(QMainWindow):
     def schedule_soon(self) -> None:
         self._schedule_timer.start()
 
-    def stage_size(self) -> tuple[int, int]:
+    def full_size(self) -> tuple[int, int]:
         return max(1, self.stage.width()), max(1, self.stage.height())
+
+    def stage_size(self) -> tuple[int, int]:
+        """The area videos may use: everything above the drawer when it is
+        docked open, otherwise the whole window."""
+        w, h = self.full_size()
+        if self.drawer.expanded:
+            h -= self.drawer.preferred_height(h)
+        return w, max(1, h)
+
+    def video_area(self) -> QRect:
+        return QRect(0, 0, *self.stage_size())
 
     def schedule(self) -> None:
         """Bump what no longer fits, start what does, and lay everything out."""
@@ -242,7 +257,8 @@ class MainWindow(QMainWindow):
         self.layout_ = p.layout
         self._apply_layout(animate=True)
 
-        if (not self.pl.playing and s.repeat_all and self.pl.played
+        # Endless playback: once nothing is left to start, replay what has played.
+        if (s.endless and self.pl.played
                 and not any(it.probed and not it.error for it in self.pl.queued)):
             if self.pl.recycle_played():
                 self.schedule_soon()
@@ -287,7 +303,7 @@ class MainWindow(QMainWindow):
 
     def stage_resized(self) -> None:
         if self.focus_tile:
-            self.focus_tile.move_to(self.stage.rect(), False)
+            self.focus_tile.move_to(self.video_area(), False)
         elif self.bench and self.bench.layout:
             self._bench_layout()
         else:
@@ -349,7 +365,7 @@ class MainWindow(QMainWindow):
                 t.set_paused(True)
         tile.set_paused(False)
         tile.raise_()
-        tile.move_to(self.stage.rect(), animate=True)
+        tile.move_to(self.video_area(), animate=True)
         self._place_overlays()
         self._cursor_tick()
 
@@ -475,7 +491,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------- overlays & mouse
     def _place_overlays(self) -> None:
-        w, h = self.stage_size()
+        w, h = self.full_size()
         dh = self.drawer.preferred_height(h)
         self.drawer.setGeometry(0, h - dh, w, dh)
         lw, lh = self.light.width(), self.light.height()
@@ -490,6 +506,18 @@ class MainWindow(QMainWindow):
         for widget in (self.message, self.drawer, self.light):
             if widget.isVisible():
                 widget.raise_()
+
+    def _drawer_changed(self) -> None:
+        """A list was opened or closed: dock or undock the drawer and let the
+        wall reflow into the space that is left."""
+        self._place_overlays()
+        if self.focus_tile:
+            self.focus_tile.move_to(self.video_area(), animate=True)
+        elif self.bench:
+            self._bench_layout()
+        else:
+            self._apply_layout(animate=True)
+            self.schedule_soon()
 
     def _update_message(self) -> None:
         if self.bench:
@@ -512,7 +540,7 @@ class MainWindow(QMainWindow):
         near_bottom = inside and pos.y() >= self.stage.height() - HOVER_ZONE
         over_drawer = self.drawer.isVisible() and self.drawer.geometry().contains(pos)
         busy = QApplication.activePopupWidget() is not None or QApplication.activeModalWidget() is not None
-        if near_bottom or over_drawer or (busy and self.drawer.isVisible()):
+        if near_bottom or over_drawer or self.drawer.expanded or (busy and self.drawer.isVisible()):
             self._hide_timer.stop()
             if not self.drawer.isVisible():
                 self.drawer.show()
@@ -521,14 +549,55 @@ class MainWindow(QMainWindow):
         elif self.drawer.isVisible() and not self._hide_timer.isActive():
             self._hide_timer.start()
 
-        # Audio follows the mouse (or the focused video).
         if self.bench:
+            self.close_btn.hide()
             return
+        hovered = self.tile_under_cursor() if inside and not over_drawer else None
+        self._show_close(hovered)
+
+        # Audio follows the mouse (or the focused video).
         target = self.focus_tile
-        if target is None and self.settings.hover_audio and inside and not over_drawer:
-            target = self.tile_under_cursor()
+        if target is None and self.settings.hover_audio:
+            target = hovered
         for t in self.tiles.values():
             t.set_muted(t is not target)
+
+    def _show_close(self, tile: VideoTile | None) -> None:
+        """Put the "X" in the top-right corner of the video under the mouse."""
+        btn = self.close_btn
+        if tile is None or tile.item is None:
+            if not btn.underMouse():
+                btn.hide()
+                self._close_target = None
+            return
+        g = self._video_rect(tile)
+        x, y = g.right() - btn.width() - 8, g.top() + 8
+        if self.light.isVisible() and self.light.geometry().intersects(
+                btn.geometry().translated(x - btn.x(), y - btn.y())):
+            y = self.light.geometry().bottom() + 6   # step below the traffic light
+        btn.move(x, y)
+        self._close_target = tile
+        if not btn.isVisible():
+            btn.show()
+        btn.raise_()
+
+    @staticmethod
+    def _video_rect(tile: VideoTile) -> QRect:
+        """The part of a tile the picture covers (cells may be letterboxed)."""
+        g = tile.geometry()
+        a = tile.item.aspect if tile.item and tile.item.aspect else g.width() / max(1, g.height())
+        if g.width() / max(1, g.height()) > a:
+            w = round(g.height() * a)
+            return QRect(g.x() + (g.width() - w) // 2, g.y(), w, g.height())
+        h = round(g.width() / a)
+        return QRect(g.x(), g.y() + (g.height() - h) // 2, g.width(), h)
+
+    def _close_clicked(self) -> None:
+        tile = self._close_target
+        self.close_btn.hide()
+        self._close_target = None
+        if tile is not None and tile.item is not None:
+            self._skip_id(tile.item.id)
 
     def _lists_changed(self) -> None:
         if not self._lists_timer.isActive():

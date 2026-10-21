@@ -6,7 +6,7 @@ native window too (``WA_NativeWindow``) or it would be hidden underneath.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout, QLabel,
                                QListWidget, QListWidgetItem, QMenu, QToolButton,
@@ -98,6 +98,51 @@ class TrafficLight(QWidget):
                 c = c.darker(420)
             p.setBrush(c)
             p.drawEllipse(QRectF(6 + i * 19, y, d, d))
+        p.end()
+
+
+class CloseButton(QWidget):
+    """The "X" shown in the corner of the video under the mouse."""
+
+    clicked = Signal()
+    SIZE = 28
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        _native(self)
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("Done with this video (move it to Played)")
+        self.setMouseTracking(True)
+        self._hover = False
+
+    def enterEvent(self, e) -> None:
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, e) -> None:
+        self._hover = False
+        self.update()
+
+    def mousePressEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor("#000"))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#c0392b") if self._hover else QColor(30, 30, 34))
+        p.drawEllipse(QRectF(self.rect()).adjusted(1, 1, -1, -1))
+        pen = p.pen()
+        pen.setColor(QColor("white"))
+        pen.setWidthF(2.2)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        m = self.SIZE * 0.34
+        p.drawLine(QPointF(m, m), QPointF(self.SIZE - m, self.SIZE - m))
+        p.drawLine(QPointF(self.SIZE - m, m), QPointF(m, self.SIZE - m))
         p.end()
 
 
@@ -207,7 +252,7 @@ class Drawer(QFrame):
     def preferred_height(self, stage_height: int) -> int:
         if not self.expanded:
             return BAR_HEIGHT
-        return BAR_HEIGHT + max(140, min(420, int(stage_height * 0.38)))
+        return BAR_HEIGHT + max(120, min(320, int(stage_height * 0.26)))
 
     def _toggled(self, i: int, on: bool) -> None:
         self.panels[i].setVisible(on)

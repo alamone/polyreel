@@ -1,18 +1,18 @@
 # Polyreel
 
-![Polyreel playing nine videos of different shapes at once](docs/screenshot-wall.jpg)
+![Polyreel playing videos of different shapes at once, with its three playlists open](docs/screenshot.jpg)
 
 Play a whole folder of videos **at the same time**, packed into one window like a
-masonry wall. Landscape, portrait, square and ultrawide videos all keep their shape;
-the layout engine fits them together like puzzle pieces so as little of the screen
-as possible is wasted.
+masonry wall. Landscape, portrait, square and ultrawide videos all keep their shape
+and stay roughly the same size, fitted together like puzzle pieces.
 
-- **Smart packing.** Every layout is a guillotine tiling where each video keeps its
-  aspect ratio, so the only wasted space is an outer letterbox. A search
-  (seeded with justified rows/columns, refined by simulated annealing) picks the
-  arrangement that fills the window best while keeping tile sizes even. When one
-  video ends, its replacement takes over the same spot if the shape is similar,
-  so the rest of the wall doesn't jump around.
+- **Smart packing.** Videos are arranged in a guillotine tiling (nested rows and
+  columns). Every video keeps its aspect ratio, and no video is allowed to dominate:
+  sizes stay within about 1.5x of each other. To make mixed shapes fit, a tile may
+  be up to 1.5x wider or taller than its video, with thin black bars. Within that,
+  a search (seeded with justified rows/columns, refined by simulated annealing)
+  covers as much of the window as it can. When one video ends, its replacement
+  takes over the same spot, so the rest of the wall doesn't jump around.
 - **Your limits.** *Max simultaneous videos* and *Smallest video size* (as a % of
   the window area). Videos that would break either limit wait in the queue.
   The first time you add videos, an optional **benchmark** plays your own files
@@ -23,12 +23,15 @@ as possible is wasted.
 - **Click a video to focus it.** Everything else pauses, the video fills the window,
   and when it finishes the wall comes back and resumes. Click again or press Esc to
   return early.
-- **Three hidden playlists.** Move the mouse to the bottom edge to reveal
-  *Played*, *Playing* and *Queued*; click each to expand it. Drag to reorder the
-  queue, double-click to play next / focus / replay, right-click for more, Delete to remove.
-
-  ![The playlist drawer open at the bottom of the window](docs/screenshot-playlists.jpg)
-
+- **Three playlists.** Move the mouse to the bottom edge to reveal
+  *Played*, *Playing* and *Queued*. Click one to open it: the playlists dock below
+  the wall, which shrinks to fit above them; close them all to get the full
+  window back. Drag to reorder the queue, double-click to play next / focus /
+  replay, right-click for more, Delete to remove.
+- **Done with a video?** Hover over it and click the **✕** in its corner to move it
+  straight to *Played*; the next queued video takes its place.
+- **Endless playback** (optional): when the queue runs out, everything already
+  played is queued again, so the wall never empties.
 - Sound follows the mouse (the video under the pointer is unmuted); optional.
 
 ## Running it
@@ -59,8 +62,9 @@ python -m polyreel [video files or folders...]
 | | |
 |---|---|
 | Click a video | Focus it (pause others, fill the window) / click again to go back |
+| ✕ on a video (on hover) | Move it to *Played* now |
 | Right-click | Menu: focus, skip, add, settings, benchmark |
-| Mouse at bottom edge | Show the playlists |
+| Mouse at bottom edge | Show the playlist bar; click a list to dock it open |
 | Space | Pause / resume all |
 | F, F11, double-click empty space | Fullscreen |
 | Esc | Leave focus → leave fullscreen; cancels a running benchmark |
@@ -76,7 +80,8 @@ python -m polyreel [video files or folders...]
 | Smallest video size | No video is shrunk below this % of the window area (25% ≈ 2×2 grid, 11% ≈ 3×3, 6% ≈ 4×4, 4% ≈ 5×5). |
 | Queue look-ahead | 1 = strict queue order. N > 1 lets one of the next N videos jump ahead if its shape fits the free space better. |
 | Hardware decoding | `auto-safe` (default) offloads decoding to the GPU, which allows far more streams. |
-| Gap, repeat all, shuffle, light position, tray icon | As named. |
+| Endless playback | When the queue runs out, queue everything already played again. |
+| Gap, shuffle, light position, tray icon | As named. |
 
 ## Project layout
 
@@ -88,7 +93,7 @@ polyreel/
   perf.py       frame-drop monitor, traffic-light levels, benchmark plan
   tile.py       one libmpv player embedded in a native child window
   probe.py      background probing of each file's shape and length
-  ui.py         playlist drawer and traffic-light widgets
+  ui.py         playlist drawer, traffic light and close-button widgets
   app.py        main window tying it together
 tests/          pytest suite for the pure-Python parts
 ```
@@ -100,7 +105,7 @@ Run the tests with `pip install pytest && python -m pytest`.
 - Each video is its own libmpv instance rendering into a native child window,
   so decoding and rendering stay in mpv (hardware-accelerated) and every format
   mpv supports works.
-- Overlays (the playlist drawer, the light) are native windows stacked above the
+- Overlays (the playlist drawer, the light, the ✕) are native windows stacked above the
   videos; they are opaque rather than translucent for that reason.
 - The benchmark uses your own files, because a 4K HEVC file and a 480p H.264 file
   cost very different amounts to decode. Re-run it if your library changes.
