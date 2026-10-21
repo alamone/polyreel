@@ -57,7 +57,8 @@ python -m polyreel [video files or folders...]
    <https://github.com/shinchiro/mpv-winbuild-cmake/releases>.
 2. Extract **`libmpv-2.dll`** (7-Zip can open the archive) into this folder,
    next to `README.md`, or into a `lib\` subfolder.
-3. Double-click `run.bat`, or run `python -m polyreel`.
+3. Double-click `run.bat`. On first run it installs the Python packages
+   (`pip install -r requirements.txt`) for you, and it tells you if the DLL is missing.
 
 ### Linux / macOS
 
