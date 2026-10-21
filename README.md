@@ -1,5 +1,7 @@
 # Polyreel
 
+![Polyreel playing nine videos of different shapes at once](docs/screenshot-wall.jpg)
+
 Play a whole folder of videos **at the same time**, packed into one window like a
 masonry wall. Landscape, portrait, square and ultrawide videos all keep their shape;
 the layout engine fits them together like puzzle pieces so as little of the screen
@@ -24,6 +26,9 @@ as possible is wasted.
 - **Three hidden playlists.** Move the mouse to the bottom edge to reveal
   *Played*, *Playing* and *Queued*; click each to expand it. Drag to reorder the
   queue, double-click to play next / focus / replay, right-click for more, Delete to remove.
+
+  ![The playlist drawer open at the bottom of the window](docs/screenshot-playlists.jpg)
+
 - Sound follows the mouse (the video under the pointer is unmuted); optional.
 
 ## Running it
@@ -99,3 +104,12 @@ Run the tests with `pip install pytest && python -m pytest`.
   videos; they are opaque rather than translucent for that reason.
 - The benchmark uses your own files, because a 4K HEVC file and a 480p H.264 file
   cost very different amounts to decode. Re-run it if your library changes.
+
+## Credits
+
+Screenshots show public-domain footage from the
+[NASA Image and Video Library](https://images.nasa.gov/): the Artemis I launch,
+Apollo 11 on the Moon, life aboard the International Space Station, Earth at
+night from orbit, a solar flare seen by the Solar Dynamics Observatory, and a
+timelapse inside Kennedy Space Center's Vehicle Assembly Building.
+NASA does not endorse this project.

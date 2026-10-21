@@ -31,6 +31,11 @@ class VideoTile(QWidget):
         self.setPalette(pal)
         self.setAutoFillBackground(True)
         self.setMouseTracking(True)
+        # mpv can leave its video window hidden if the parent window isn't
+        # visible yet when the player starts, so show the tile first
+        # (as a 1x1 speck until the layout gives it a real place).
+        self.setGeometry(0, 0, 1, 1)
+        self.show()
 
         self.item = None
         self._active = False     # true once the current file has loaded
