@@ -1,0 +1,88 @@
+# Builds the ready-to-run Windows zip (Polyreel.exe with Python, Qt and libmpv
+# bundled).
+#
+# - Pushing a tag like v0.1.0 builds it and publishes a GitHub Release.
+# - Changes to the packaging (and manual runs from the Actions tab) only build
+#   it; the zip is attached to the run as an artifact for testing.
+name: Windows build
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [main]
+    paths:
+      - "packaging/**"
+      - ".github/workflows/windows-build.yml"
+      - "requirements.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to publish releases
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller pytest
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Download libmpv
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $rel = gh release view --repo shinchiro/mpv-winbuild-cmake --json tagName,assets | ConvertFrom-Json
+          # The plain x86_64 build runs on any 64-bit PC (the -v3 one needs a newer CPU).
+          $asset = $rel.assets | Where-Object { $_.name -match '^mpv-dev-x86_64-\d.*\.7z$' } | Select-Object -First 1
+          if (-not $asset) { throw "No mpv-dev-x86_64 archive in release $($rel.tagName)" }
+          gh release download $rel.tagName --repo shinchiro/mpv-winbuild-cmake --pattern $asset.name --dir mpvdev
+          7z e "mpvdev/$($asset.name)" -ompvdev libmpv-2.dll -r -y
+          if (-not (Test-Path mpvdev/libmpv-2.dll)) { throw "libmpv-2.dll not found in $($asset.name)" }
+          Copy-Item mpvdev/libmpv-2.dll .
+          "LIBMPV_RELEASE=$($rel.tagName)" >> $env:GITHUB_ENV
+          "LIBMPV_ASSET=$($asset.name)" >> $env:GITHUB_ENV
+
+      - name: Build Polyreel.exe
+        run: pyinstaller --noconfirm packaging/polyreel.spec
+
+      - name: Check the build starts and loads libmpv
+        run: |
+          $p = Start-Process dist/Polyreel/Polyreel.exe -ArgumentList "--self-test" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
+
+      - name: Package
+        run: |
+          $notes = (Get-Content packaging/THIRD-PARTY-NOTICES.txt -Raw) `
+            -replace '@LIBMPV_RELEASE@', $env:LIBMPV_RELEASE -replace '@LIBMPV_ASSET@', $env:LIBMPV_ASSET
+          Set-Content dist/Polyreel/THIRD-PARTY-NOTICES.txt $notes
+          Copy-Item LICENSE dist/Polyreel/LICENSE.txt
+          Copy-Item README.md dist/Polyreel/README.md
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $zip = "Polyreel-$($env:GITHUB_REF_NAME)-windows-x64.zip"
+          } else {
+            $zip = "Polyreel-windows-x64-$($env:GITHUB_SHA.Substring(0, 7)).zip"
+          }
+          Compress-Archive -Path dist/Polyreel -DestinationPath $zip
+          "ZIP=$zip" >> $env:GITHUB_ENV
+          Write-Host "Built $zip ($([math]::Round((Get-Item $zip).Length / 1MB)) MB) with libmpv $env:LIBMPV_RELEASE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polyreel-windows-x64
+          path: ${{ env.ZIP }}
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME $env:ZIP --title "Polyreel $env:GITHUB_REF_NAME" --generate-notes

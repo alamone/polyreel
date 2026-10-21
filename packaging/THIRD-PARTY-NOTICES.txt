@@ -1,0 +1,39 @@
+Polyreel
+Copyright (C) 2026 alamone
+
+Polyreel is free software, licensed under the GNU General Public License,
+version 3 or (at your option) any later version. See LICENSE.txt. Its source
+code is at https://github.com/alamone/polyreel
+
+Additional terms under section 7 of the GPL: this license does not grant any
+rights to use the name "Polyreel" or its icon (section 7(e)). Modified versions
+must be clearly marked as different from the original, including by not being
+called "Polyreel" (section 7(c)).
+
+
+This download also contains the following software, each under its own
+license. Their DLLs are separate files in the _internal folder and may be
+replaced with other compatible versions.
+
+libmpv (mpv media player library)  -  _internal\libmpv-2.dll
+    License: GNU GPL version 2 or later (this build includes GPL components).
+    Binary: @LIBMPV_ASSET@, release @LIBMPV_RELEASE@ of
+            https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/@LIBMPV_RELEASE@
+    Corresponding source:
+            the build scripts at https://github.com/shinchiro/mpv-winbuild-cmake
+            (which fetch and build the exact sources of mpv, FFmpeg and the other
+            libraries this DLL contains); mpv itself at https://github.com/mpv-player/mpv
+
+Qt 6 and PySide6 (Qt for Python)  -  _internal\PySide6
+    License: GNU LGPL version 3. Source: https://code.qt.io and https://download.qt.io
+
+python-mpv  -  bundled Python module
+    License: GNU GPL version 2 or later, or GNU LGPL version 2.1 or later.
+    Source: https://github.com/jaseg/python-mpv
+
+Python
+    License: Python Software Foundation License. Source: https://www.python.org
+
+PyInstaller bootloader (starts Polyreel.exe)
+    License: GPL version 2 or later with an exception that permits use in any
+    program. Source: https://github.com/pyinstaller/pyinstaller

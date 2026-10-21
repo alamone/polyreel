@@ -44,7 +44,17 @@ and stay roughly the same size, fitted together like puzzle pieces to fill the w
 - **Video only.** Folders are scanned for video files; animated GIFs and PNGs
   count, still images (GIF, PNG, JPEG, WebP…) and audio-only files are skipped.
 
-## Running it
+## Download (Windows)
+
+Get `Polyreel-<version>-windows-x64.zip` from the
+[Releases page](https://github.com/alamone/polyreel/releases), unzip it anywhere and
+run **`Polyreel.exe`**. Everything it needs is inside the folder; there is nothing
+to install.
+
+Polyreel isn't code-signed, so the first time Windows may show *"Windows protected
+your PC"*. Click **More info → Run anyway**.
+
+## Running from source
 
 Requires Python 3.10+ and **libmpv**.
 
@@ -67,6 +77,15 @@ python -m polyreel [video files or folders...]
 - Debian/Ubuntu: `sudo apt install libmpv2` (or `libmpv-dev`)
 - Fedora: `sudo dnf install mpv-libs`
 - macOS: `brew install mpv`
+
+### Building the Windows zip
+
+The [Windows build workflow](.github/workflows/windows-build.yml) builds it on GitHub:
+pushing a tag such as `v0.1.0` builds the zip and publishes a release, and running the
+workflow by hand from the Actions tab builds a test zip without releasing. To build
+locally, put `libmpv-2.dll` in the project root and run
+`pip install pyinstaller` then `pyinstaller --noconfirm packaging/polyreel.spec`;
+the result is in `dist\Polyreel`.
 
 ## Controls
 
@@ -133,3 +152,18 @@ Apollo 11 on the Moon, life aboard the International Space Station, Earth at
 night from orbit, a solar flare seen by the Solar Dynamics Observatory, and a
 timelapse inside Kennedy Space Center's Vehicle Assembly Building.
 NASA does not endorse this project.
+
+## License
+
+Copyright (C) 2026 alamone
+
+Polyreel is free software: you can redistribute it and/or modify it under the terms of
+the [GNU General Public License](LICENSE), version 3 or (at your option) any later
+version. It comes with no warranty.
+
+Additional terms (GPLv3 section 7): the license grants no rights to use the name
+"Polyreel" or its icon, and modified versions must be clearly marked as different from
+the original, including by not being called "Polyreel".
+
+The Windows download bundles libmpv (GPL), Qt/PySide6 (LGPL), python-mpv and Python;
+see `THIRD-PARTY-NOTICES.txt` in the zip for their licenses and sources.
