@@ -7,7 +7,7 @@ native window too (``WA_NativeWindow``) or it would be hidden underneath.
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout, QLabel,
                                QListWidget, QListWidgetItem, QMenu, QToolButton,
                                QVBoxLayout, QWidget)
@@ -83,10 +83,16 @@ class TrafficLight(QWidget):
     def mousePressEvent(self, e) -> None:
         self.clicked.emit()
 
+    def resizeEvent(self, e) -> None:
+        # Native windows can't be transparent; clip to the rounded badge.
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), 11, 11)
+        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(), QColor("#000"))
+        p.fillRect(self.rect(), QColor("#1c1c20"))
         p.setPen(Qt.NoPen)
         p.setBrush(QColor("#1c1c20"))
         p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 11, 11)
@@ -128,16 +134,17 @@ class CloseButton(QWidget):
         if e.button() == Qt.LeftButton:
             self.clicked.emit()
 
+    def resizeEvent(self, e) -> None:
+        # A native window can't be transparent, so clip it to a circle.
+        self.setMask(QRegion(self.rect(), QRegion.Ellipse))
+
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(), QColor("#000"))
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#c0392b") if self._hover else QColor(30, 30, 34))
-        p.drawEllipse(QRectF(self.rect()).adjusted(1, 1, -1, -1))
-        pen = p.pen()
-        pen.setColor(QColor("white"))
-        pen.setWidthF(2.2)
+        p.setPen(QPen(QColor(255, 255, 255, 170), 1.5))
+        p.setBrush(QColor("#c0392b") if self._hover else QColor(20, 20, 24, 235))
+        p.drawEllipse(QRectF(self.rect()).adjusted(0.75, 0.75, -0.75, -0.75))
+        pen = QPen(QColor("white"), 2.2)
         pen.setCapStyle(Qt.RoundCap)
         p.setPen(pen)
         m = self.SIZE * 0.34
