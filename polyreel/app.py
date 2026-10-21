@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QLabel, QMainWindow,
                                QMenu, QMessageBox, QSystemTrayIcon, QToolTip, QWidget)
 
 from . import layout as L
-from .perf import IDLE, BenchmarkPlan, PerfMonitor
+from .perf import BENCH_MAX_DROP, IDLE, BenchmarkPlan, PerfMonitor
 from .playlist import PLAYABLE_EXTENSIONS, Item, Playlists, expand_paths
 from .probe import NOT_VIDEO, Prober
 from .scheduler import DEFAULT_ASPECT, plan
@@ -750,7 +750,7 @@ class MainWindow(QMainWindow):
         r = QMessageBox.question(
             self, "Quick benchmark?",
             "Measure how many of these videos your computer can play at once?\n\n"
-            "This takes about 30–60 seconds and sets “Max simultaneous videos”.\n"
+            "This takes about half a minute and sets “Max simultaneous videos”.\n"
             "You can run it any time from Settings.")
         if r == QMessageBox.Yes:
             self.start_benchmark()
@@ -783,15 +783,21 @@ class MainWindow(QMainWindow):
     def _bench_step(self) -> None:
         b = self.bench
         k = b.plan.current
-        while len(b.tiles) < k:
+        # Start every round from scratch: players left over from an
+        # overloaded round are still behind and would skew the next one.
+        for tile in b.tiles:
+            self._release(tile)
+        b.tiles = []
+        for i in range(k):
             tile = self._acquire()
-            src = b.sources[len(b.tiles) % len(b.sources)]
-            tile.load(src, loop=True, hwdec=self.settings.hwdec)
+            tile.load(b.sources[i % len(b.sources)], loop=True, hwdec=self.settings.hwdec)
             tile.set_muted(True)
             b.tiles.append(tile)
         self._bench_layout()
         self._update_message()
-        self._bench_after(2000, self._bench_measure_start)   # warm up
+        # Warm up; a little longer after a failed round so the machine settles.
+        settle = 3000 if b.plan.results and b.plan.results[-1][1] > BENCH_MAX_DROP else 2000
+        self._bench_after(settle, self._bench_measure_start)
 
     def _bench_after(self, ms: int, fn) -> None:
         b = self.bench

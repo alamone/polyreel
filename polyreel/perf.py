@@ -71,18 +71,27 @@ def classify(ratio: float, current: str = IDLE) -> str:
     return GREEN
 
 
-# Stream counts tried by the benchmark, in order.
+# Stream counts the benchmark can try.
 BENCH_STEPS = [1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 32]
+BENCH_START = 8
 BENCH_MAX_DROP = 0.02
 
 
 class BenchmarkPlan:
-    """Decides which stream count to try next and what to recommend."""
+    """Finds the highest stream count that plays smoothly in few measurements.
+
+    If N streams play smoothly, fewer will too, so the plan starts in the
+    middle (8), doubles while it keeps passing, and once something fails
+    bisects between the highest pass and the lowest failure.  That is 3-5
+    measurements instead of trying every count in turn.
+    """
 
     def __init__(self, limit: int = 32) -> None:
         self.steps = [s for s in BENCH_STEPS if s <= limit] or [1]
-        self.index = 0
-        self.passed = 0
+        self.passed_i = -1                 # highest index known to pass
+        self.failed_i = len(self.steps)    # lowest index known to fail
+        start = [i for i, s in enumerate(self.steps) if s <= BENCH_START]
+        self.index = start[-1] if start else 0
         self.results: list[tuple[int, float]] = []
         self.done = False
 
@@ -93,13 +102,19 @@ class BenchmarkPlan:
     def record(self, drop_ratio: float) -> None:
         self.results.append((self.current, drop_ratio))
         if drop_ratio <= BENCH_MAX_DROP:
-            self.passed = self.current
-            self.index += 1
-            if self.index >= len(self.steps):
-                self.done = True
+            self.passed_i = self.index
         else:
+            self.failed_i = self.index
+        if self.failed_i - self.passed_i <= 1:
             self.done = True
+        elif self.failed_i == len(self.steps):
+            # Nothing has failed yet: double the stream count.
+            target = self.current * 2
+            bigger = [i for i, s in enumerate(self.steps) if s >= target]
+            self.index = bigger[0] if bigger else len(self.steps) - 1
+        else:
+            self.index = (self.passed_i + self.failed_i) // 2
 
     @property
     def recommended(self) -> int:
-        return max(1, self.passed)
+        return self.steps[self.passed_i] if self.passed_i >= 0 else 1

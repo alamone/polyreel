@@ -151,12 +151,29 @@ def test_perf_monitor_levels():
     assert m.update({1: Sample(5, 30)}, 1.0) == GREEN
 
 
-def test_benchmark_plan():
-    b = BenchmarkPlan(limit=8)
-    for ratio in (0.0, 0.0, 0.01, 0.0, 0.10):
-        assert not b.done
-        b.record(ratio)
-    assert b.done and b.recommended == 4
+def _run_bench(capacity, limit=32):
+    """Simulate a machine that plays up to ``capacity`` streams smoothly."""
+    b = BenchmarkPlan(limit=limit)
+    tried = []
+    while not b.done:
+        tried.append(b.current)
+        b.record(0.0 if b.current <= capacity else 0.2)
+    return b.recommended, tried
+
+
+@pytest.mark.parametrize("capacity", [0, 1, 2, 3, 5, 8, 9, 11, 13, 20, 31, 32, 50])
+def test_benchmark_finds_capacity_quickly(capacity):
+    from polyreel.perf import BENCH_STEPS
+    recommended, tried = _run_bench(capacity)
+    expected = max([s for s in BENCH_STEPS if s <= capacity] or [1])
+    assert recommended == expected
+    assert len(tried) <= 5, tried
+    assert len(set(tried)) == len(tried)    # never measures the same count twice
+
+
+def test_benchmark_plan_respects_limit():
+    recommended, tried = _run_bench(capacity=100, limit=6)
+    assert max(tried) <= 6 and recommended == 6
 
 
 def test_recycle_played_for_endless_mode():

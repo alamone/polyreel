@@ -18,7 +18,9 @@ and stay roughly the same size, fitted together like puzzle pieces to fill the w
 - **Your limits.** *Max simultaneous videos* and *Smallest video size* (as a % of
   the window area). Videos that would break either limit wait in the queue.
   The first time you add videos, an optional **benchmark** plays your own files
-  at 1, 2, 3, 4, 6, 8… at once and recommends the highest count with no dropped frames.
+  several at a time and recommends the highest count with no dropped frames. It
+  starts at 8, doubles while that plays smoothly and narrows in once it doesn't,
+  so it needs only 3 to 5 measurements (about half a minute).
 - **Performance traffic light** in a window corner (and the system tray):
   green = smooth, yellow = some frames dropped (≥1%), red = struggling (≥5%).
   Hover it for numbers; click it for settings.
