@@ -54,7 +54,7 @@ class VideoTile(QWidget):
             sub_auto="no",
             audio_display="no",
         )
-        vo = os.environ.get("MASONRY_VO")  # e.g. "x11" for headless testing
+        vo = os.environ.get("POLYREEL_VO")  # e.g. "x11" for headless testing
         if vo:
             opts["vo"] = vo
         self.player = mpv.MPV(**opts)

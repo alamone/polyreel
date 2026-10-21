@@ -1,5 +1,5 @@
 [project]
-name = "masonry-player"
+name = "polyreel"
 version = "0.1.0"
 description = "Play many videos at once in an aspect-preserving masonry layout"
 readme = "README.md"
@@ -7,10 +7,10 @@ requires-python = ">=3.10"
 dependencies = ["PySide6>=6.5", "python-mpv>=1.0.4"]
 
 [project.scripts]
-masonry-player = "masonry_player.__main__:main"
+polyreel = "polyreel.__main__:main"
 
 [tool.setuptools]
-packages = ["masonry_player"]
+packages = ["polyreel"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

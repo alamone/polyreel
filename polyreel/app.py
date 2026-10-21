@@ -62,7 +62,7 @@ class Stage(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self, paths: list[str]) -> None:
         super().__init__()
-        self.setWindowTitle("Masonry Player")
+        self.setWindowTitle("Polyreel")
         self.resize(1280, 760)
         self.setAcceptDrops(True)
 
@@ -159,7 +159,7 @@ class MainWindow(QMainWindow):
         self._tray_menu = menu
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._tray_activated)
-        self.tray.setToolTip("Masonry Player")
+        self.tray.setToolTip("Polyreel")
         self.tray.show()
 
     def _tray_activated(self, reason) -> None:
@@ -563,7 +563,7 @@ class MainWindow(QMainWindow):
             if self.tray.property("status") != status:
                 self.tray.setIcon(light_icon(status))
                 self.tray.setProperty("status", status)
-            self.tray.setToolTip("Masonry Player — " + tip.split("\n")[0])
+            self.tray.setToolTip("Polyreel — " + tip.split("\n")[0])
 
     # ------------------------------------------------------------- benchmark
     def _offer_benchmark(self) -> None:

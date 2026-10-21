@@ -1,4 +1,4 @@
-# Masonry Player
+# Polyreel
 
 Play a whole folder of videos **at the same time**, packed into one window like a
 masonry wall. Landscape, portrait, square and ultrawide videos all keep their shape;
@@ -32,7 +32,7 @@ Requires Python 3.10+ and **libmpv**.
 
 ```bash
 pip install -r requirements.txt
-python -m masonry_player [video files or folders...]
+python -m polyreel [video files or folders...]
 ```
 
 ### Windows: getting libmpv
@@ -41,7 +41,7 @@ python -m masonry_player [video files or folders...]
    <https://github.com/shinchiro/mpv-winbuild-cmake/releases>.
 2. Extract **`libmpv-2.dll`** (7-Zip can open the archive) into this folder,
    next to `README.md`, or into a `lib\` subfolder.
-3. Double-click `run.bat`, or run `python -m masonry_player`.
+3. Double-click `run.bat`, or run `python -m polyreel`.
 
 ### Linux / macOS
 
@@ -76,7 +76,7 @@ python -m masonry_player [video files or folders...]
 ## Project layout
 
 ```
-masonry_player/
+polyreel/
   layout.py     aspect-preserving packing (pure Python, unit tested)
   scheduler.py  which videos start / wait / get bumped (pure Python, unit tested)
   playlist.py   played / playing / queued lists

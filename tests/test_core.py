@@ -3,11 +3,11 @@ import math
 
 import pytest
 
-from masonry_player import layout as L
-from masonry_player.perf import (GREEN, IDLE, RED, YELLOW, BenchmarkPlan,
+from polyreel import layout as L
+from polyreel.perf import (GREEN, IDLE, RED, YELLOW, BenchmarkPlan,
                                  PerfMonitor, Sample)
-from masonry_player.playlist import Item, Playlists
-from masonry_player.scheduler import plan
+from polyreel.playlist import Item, Playlists
+from polyreel.scheduler import plan
 
 W, H = 1600, 900
 

@@ -61,7 +61,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, settings: Settings, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Masonry Player settings")
+        self.setWindowTitle("Polyreel settings")
         self.benchmark_requested = False
         s = settings
 
