@@ -78,6 +78,7 @@ class Layout:
     stretch: dict = field(default_factory=dict)  # cell shape / video shape
     aspects: dict = field(default_factory=dict)  # video shapes
     crop: float = 0.0
+    widen: float = 1.0
     score: float = 0.0
     valid: bool = True
     width: float = 0.0
@@ -126,17 +127,32 @@ def _place(node: Tree, memo: dict, x: float, y: float, w: float, h: float,
         _place(right, memo, x, y + lh, w, h - lh, out)
 
 
-def place(tree: Tree, aspects: dict, width: float, height: float) -> dict:
-    """Cells for ``tree`` spanning the whole ``width`` x ``height`` window.
+def widen_factor(natural: float, window: float, crop: float) -> float:
+    """How far to stretch a layout of aspect ``natural`` towards the window's
+    shape: only as far as cropping the videos can absorb, so every video
+    still fills its cell edge to edge and neighbours stay lined up."""
+    want = window / natural
+    limit = 1.0 / (1.0 - crop)
+    return min(want, limit) if want >= 1.0 else max(want, 1.0 / limit)
 
-    The tree's natural shape is stretched to the window, so cells come out a
-    little wider or taller than ``aspects``; tiles make up the difference by
-    cropping their video's edges or showing thin bars.
+
+def place(tree: Tree, aspects: dict, width: float, height: float,
+          crop: float = 0.0, widen: float | None = None) -> dict:
+    """Cells for ``tree`` (with cell shapes ``aspects``), centred in the window.
+
+    The layout is stretched by ``widen`` (by default, as far towards the
+    window's shape as ``crop`` allows); whatever is left over becomes an even
+    border around the wall.
     """
     memo: dict = {}
-    _shapes(tree, aspects, memo)
+    natural = _shapes(tree, aspects, memo)
+    a = natural * (widen if widen is not None else widen_factor(natural, width / height, crop))
+    if a > width / height:
+        fw, fh = width, width / a
+    else:
+        fw, fh = height * a, height
     rects: dict = {}
-    _place(tree, memo, 0.0, 0.0, width, height, rects)
+    _place(tree, memo, (width - fw) / 2, (height - fh) / 2, fw, fh, rects)
     return rects
 
 
@@ -186,30 +202,70 @@ def _shares(node: Tree, memo: dict, frac: float, out: dict) -> None:
     _shares(node[2], memo, frac * (1.0 - lf), out)
 
 
-def _cell_coverage(tree: Tree, aspects: dict, stretch: dict, width: float,
-                   height: float, crop: float) -> tuple[dict, dict]:
-    """Each cell's share of the window, and how much of it its video covers."""
+def _analyse(tree: Tree, aspects: dict, stretch: dict, width: float, height: float,
+             crop: float, widen: float | None = None, fill_window: bool = False) -> tuple:
+    """Score how a tree fills the window.  Returns ``(score, widen, shares,
+    covers)``: the chosen stretch towards the window's shape, each cell's
+    share of the window and how much of each cell its video covers.
+
+    Unless ``widen`` is given, it is chosen from: only as far as cropping
+    can absorb (every video fills its cell, so rows and columns line up and
+    any slack becomes a border around the wall), all the way to the window
+    (slack becomes bars inside cells), or halfway.  Bars inside a cell count
+    double against the score (coverage is squared), so they only win when
+    they buy a lot of extra picture.
+    """
     memo: dict = {}
-    a = _shapes(tree, cells(aspects, stretch), memo)
-    # Stretching the layout to the window widens every cell by this factor.
-    widen = (width / height) / a
-    shares: dict = {}
-    _shares(tree, memo, 1.0, shares)
-    covers = {k: coverage(aspects[k] * stretch.get(k, 1.0) * widen, aspects[k], crop)
-              for k in shares}
-    return shares, covers
+    natural = _shapes(tree, cells(aspects, stretch), memo)
+    r = width / height
+    base: dict = {}
+    _shares(tree, memo, 1.0, base)
+    if fill_window:
+        options = (r / natural,)
+    elif widen is None:
+        aligned, full = widen_factor(natural, r, crop), r / natural
+        options = (aligned,) if abs(math.log(full / aligned)) < 1e-9 else \
+            (aligned, math.sqrt(aligned * full), full)
+    else:
+        options = (widen,)
+    keys = list(base)
+    share0 = [base[k] for k in keys]
+    # How far each cell already is from its video's shape before widening.
+    dev0 = [stretch.get(k, 1.0) for k in keys]
+    fill_limit = 1.0 / (1.0 - crop)
+    best = None
+    for w in options:
+        a = natural * w
+        used = a / r if a < r else r / a      # the rest is the border around the wall
+        covers = []
+        for d in dev0:
+            q = d * w
+            q = q if q >= 1.0 else 1.0 / q
+            covers.append(1.0 if q <= fill_limit else fill_limit / q)
+        fracs = [used * f * c for f, c in zip(share0, covers)]
+        evenness = min(1.0, SIZE_TOLERANCE * min(fracs) / max(fracs))
+        # Squaring coverage makes one heavily letterboxed tile cost more than
+        # the same empty space spread thinly.
+        quality = used * sum(f * c * c for f, c in zip(share0, covers))
+        score = quality * evenness ** SIZE_PENALTY
+        if best is None or score > best[0]:
+            best = (score, w, used, covers)
+    score, w, used, covers = best
+    shares = {k: used * f for k, f in zip(keys, share0)}
+    return score, w, shares, dict(zip(keys, covers))
 
 
-def video_fractions(tree: Tree, aspects: dict, stretch: dict,
-                    width: float, height: float, crop: float = 0.0) -> dict:
+def video_fractions(tree: Tree, aspects: dict, stretch: dict, width: float,
+                    height: float, crop: float = 0.0, widen: float | None = None) -> dict:
     """Each video's visible area as a fraction of the window."""
-    shares, covers = _cell_coverage(tree, aspects, stretch, width, height, crop)
+    _, _, shares, covers = _analyse(tree, aspects, stretch, width, height, crop, widen)
     return {k: shares[k] * covers[k] for k in shares}
 
 
 def evaluate(tree: Tree, aspects: dict, width: float, height: float,
              min_area: float, prev: dict | None = None,
-             stretch: dict | None = None, crop: float = 0.0) -> tuple[float, float, float]:
+             stretch: dict | None = None, crop: float = 0.0,
+             fill_window: bool = False) -> tuple[float, float, float]:
     """Return ``(score, fill, smallest_video_fraction)``.
 
     The score is the covered fraction of the window (weighted against big
@@ -217,15 +273,11 @@ def evaluate(tree: Tree, aspects: dict, width: float, height: float,
     more than SIZE_TOLERANCE x the smallest.
     """
     stretch = stretch or {}
-    shares, covers = _cell_coverage(tree, aspects, stretch, width, height, crop)
+    score, _, shares, covers = _analyse(tree, aspects, stretch, width, height, crop,
+                                        fill_window=fill_window)
     fracs = {k: shares[k] * covers[k] for k in shares}
     fill = sum(fracs.values())
-    smallest, largest = min(fracs.values()), max(fracs.values())
-    evenness = min(1.0, SIZE_TOLERANCE * smallest / largest)
-    # Squaring each tile's coverage makes one heavily letterboxed tile cost
-    # more than the same empty space spread thinly as gutters.
-    quality = sum(shares[k] * covers[k] ** 2 for k in shares)
-    score = quality * evenness ** SIZE_PENALTY
+    smallest = min(fracs.values())
     if stretch:
         score -= W_STRETCH * sum(abs(math.log(v)) for v in stretch.values()) / len(fracs)
     if min_area > 0 and smallest < min_area:
@@ -476,8 +528,9 @@ def solve(items: Sequence[tuple[Hashable, float]], width: float, height: float,
         prev_rects = {k: Rect(r.x * sx, r.y * sy, r.w * sx, r.h * sy)
                       for k, r in prev.rects.items()}
 
-    def score_of(state: tuple[Tree, dict]) -> float:
-        return evaluate(state[0], aspects, width, height, min_area, prev_rects, state[1], crop)[0]
+    def score_of(state: tuple[Tree, dict], fill_window: bool = False) -> float:
+        return evaluate(state[0], aspects, width, height, min_area, prev_rects, state[1], crop,
+                        fill_window)[0]
 
     plain, squarish = {}, _towards_square(aspects)
     candidates = []
@@ -519,18 +572,27 @@ def solve(items: Sequence[tuple[Hashable, float]], width: float, height: float,
             start = (justified(order, aspects, rng.randint(1, n), rows=rng.random() < 0.5),
                      rng.choice((plain, squarish)))
         run += 1
-        cur, cur_score = start, score_of(start)
+        # Every other run aims purely at filling the window.  That steers the
+        # search towards arrangements whose overall shape matches the window,
+        # which the aligned option alone tends to miss; whatever each run
+        # finds is then judged by the real score.
+        fill_window = run % 2 == 0
+        cur = run_best = start
+        cur_score = run_best_score = score_of(start, fill_window)
         t0, t1 = 0.06, 0.0005
         for i in range(steps):
             if deadline and i % 32 == 0 and time.monotonic() > deadline:
                 break
             temp = t0 * (t1 / t0) ** (i / steps)
             cand = _mutate(cur, rng)
-            sc = score_of(cand)
+            sc = score_of(cand, fill_window)
             if sc >= cur_score or rng.random() < math.exp((sc - cur_score) / temp):
                 cur, cur_score = cand, sc
-                if sc > best_score:
-                    best, best_score = cand, sc
+                if sc > run_best_score:
+                    run_best, run_best_score = cand, sc
+        true_score = score_of(run_best)
+        if true_score > best_score:
+            best, best_score = run_best, true_score
 
     if adapted is not None and best is not adapted:
         a_score, a_fill, a_small = evaluate(adapted[0], aspects, width, height, min_area,
@@ -543,10 +605,11 @@ def solve(items: Sequence[tuple[Hashable, float]], width: float, height: float,
             best, best_score = adapted, a_score
 
     tree, stretch = best
-    rects = place(tree, cells(aspects, stretch), width, height)
-    fracs = video_fractions(tree, aspects, stretch, width, height, crop)
+    _, widen, _, _ = _analyse(tree, aspects, stretch, width, height, crop)
+    rects = place(tree, cells(aspects, stretch), width, height, crop, widen)
+    fracs = video_fractions(tree, aspects, stretch, width, height, crop, widen)
     smallest = min(fracs.values())
     return Layout(tree=tree, rects=rects, fill=sum(fracs.values()), min_area=smallest,
                   stretch={k: v for k, v in stretch.items() if v != 1.0}, aspects=aspects,
                   score=best_score, valid=smallest + 1e-9 >= min_area,
-                  width=width, height=height, crop=crop)
+                  width=width, height=height, crop=crop, widen=widen)

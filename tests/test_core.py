@@ -34,10 +34,10 @@ def test_layout_tiles_the_window(aspects, crop):
         assert r.x >= -1e-6 and r.y >= -1e-6
         assert r.x + r.w <= W + 1e-6 and r.y + r.h <= H + 1e-6
     _no_overlap(lay.rects)
-    # Cells cover the whole window; videos cover at most that.
+    # Videos cover at most their cells, which cover at most the window.
     total = sum(r.area for r in lay.rects.values())
-    assert math.isclose(total, W * H, rel_tol=1e-6)
-    assert 0 < lay.fill <= 1 + 1e-9
+    assert total <= W * H * (1 + 1e-6)
+    assert 0 < lay.fill <= total / (W * H) + 1e-9
 
 
 def test_coverage_and_zoom():

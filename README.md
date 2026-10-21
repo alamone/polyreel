@@ -6,11 +6,12 @@ Play a whole folder of videos **at the same time**, packed into one window like 
 masonry wall. Landscape, portrait, square and ultrawide videos all keep their shape
 and stay roughly the same size, fitted together like puzzle pieces to fill the window.
 
-- **Smart packing.** Videos are arranged in nested rows and columns that span the
-  whole window, and no video is allowed to dominate: sizes stay within about 1.5x
-  of each other. Where a tile ends up a slightly different shape from its video,
-  the video is enlarged to fill it, trimming up to 15% off its edges (adjustable,
-  or off); only beyond that do thin black bars appear. A search (seeded with
+- **Smart packing.** Videos are arranged in nested rows and columns, and no video
+  is allowed to dominate: sizes stay within about 1.5x of each other. Where a tile
+  ends up a slightly different shape from its video, the video is enlarged to fill
+  it, trimming up to 15% off its edges (adjustable, or off), so neighbouring videos
+  line up edge to edge. Any space left over becomes an even border around the wall,
+  unless thin bars inside a few tiles let the wall fill much more of the window. A search (seeded with
   justified rows/columns, refined by simulated annealing) finds the arrangement
   that shows the most picture while avoiding big bars on any one video. When one
   video ends, its replacement takes over the same spot, so the rest of the wall
@@ -38,7 +39,8 @@ and stay roughly the same size, fitted together like puzzle pieces to fill the w
 - **Endless playback** (optional): when the queue runs out, everything already
   played is queued again, so the wall never empties.
 - **Sound modes.** *Video under the mouse* (default): everything is muted except
-  the video you hover, at its own volume. *All videos at once*: new videos start
+  the video you hover, at its own volume, plus any video whose volume you've
+  changed (or unmuted) with its own controls, which keeps playing aloud. *All videos at once*: new videos start
   at full volume. *Silent*: new videos start muted. In every mode a video's own
   mute and volume controls win. Press **M** to switch.
 - **Video only.** Folders are scanned for video files; animated GIFs and PNGs

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -23,6 +24,7 @@ from .ui import BAR_HEIGHT, CloseButton, Drawer, TileControls, TrafficLight, lig
 
 HOVER_ZONE = 24        # px from the bottom edge that reveals the drawer
 HIDE_DELAY_MS = 700
+SHUTDOWN_WAIT = 2.0    # seconds to wait for players to stop when closing
 EMPTY_TEXT = ("Drop videos or folders here\n\n"
               "O  add files     Ctrl+O  add a folder     Ctrl+,  settings")
 
@@ -602,14 +604,15 @@ class MainWindow(QMainWindow):
 
     def _apply_sound(self, hovered: VideoTile | None) -> None:
         """Each video's own mute button wins.  Beyond that, in "hover" mode
-        only the video under the mouse (or the focused one) is heard; in
-        "all" and "silent" modes every video not muted by hand is heard (the
-        mode only decides whether new videos start muted)."""
+        the video under the mouse (or the focused one) is heard, plus any
+        whose volume was changed by hand; in "all" and "silent" modes every
+        video not muted by hand is heard (the mode only decides whether new
+        videos start muted)."""
         target = self.focus_tile or hovered
         for t in self.tiles.values():
             audible = not t.user_muted
             if self.settings.sound == "hover":
-                audible = audible and t is target
+                audible = audible and (t is target or t.keep_sound)
             t.set_muted(not audible)
 
     def _set_sound_mode(self, mode: str) -> None:
@@ -617,6 +620,7 @@ class MainWindow(QMainWindow):
         self.settings.sound = mode
         for t in self.tiles.values():
             t.user_muted = mode == "silent"
+            t.keep_sound = False
         self._cursor_tick()
 
     def cycle_sound(self) -> None:
@@ -672,6 +676,7 @@ class MainWindow(QMainWindow):
         tile = self._controls_target
         if tile is not None:
             tile.set_volume(volume)
+            tile.keep_sound = True        # adjusted by hand: keep hearing it
             if volume > 0:
                 tile.user_muted = False   # turning a muted video up unmutes it
 
@@ -679,6 +684,8 @@ class MainWindow(QMainWindow):
         tile = self._controls_target
         if tile is not None:
             tile.user_muted = not tile.user_muted
+            # Unmuting by hand also keeps it audible when not hovered.
+            tile.keep_sound = not tile.user_muted
             if not tile.user_muted and tile.volume == 0:
                 tile.set_volume(100)
 
@@ -870,9 +877,19 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e) -> None:
         self._cursor_timer.stop()
         self._perf_timer.stop()
-        self.prober.close()
-        for t in self.all_tiles:
-            t.shutdown()
+        # Disappear at once; shutting the players down can take a moment.
+        self.hide()
         if self.tray:
             self.tray.hide()
+        QApplication.processEvents()
+        self.prober.close()
+        # Stop every player at the same time rather than one after another
+        # (each can take a few tenths of a second to release its video
+        # output and audio device), and don't wait forever on a stuck one.
+        threads = [threading.Thread(target=t.shutdown, daemon=True) for t in self.all_tiles]
+        for th in threads:
+            th.start()
+        deadline = time.monotonic() + SHUTDOWN_WAIT
+        for th in threads:
+            th.join(max(0.0, deadline - time.monotonic()))
         super().closeEvent(e)

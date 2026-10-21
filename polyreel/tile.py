@@ -44,6 +44,7 @@ class VideoTile(QWidget):
         self._paused = False
         self.zoom = 1.0          # >1 enlarges the fitted video, cropping its edges
         self.user_muted = False  # muted with its own speaker button (or by the sound mode)
+        self.keep_sound = False  # volume changed by hand: heard even when not hovered
         self._anim: QPropertyAnimation | None = None
         # Values mpv reports as they change, so the GUI never has to wait on
         # a busy player to read them.
@@ -144,6 +145,7 @@ class VideoTile(QWidget):
         p["start"] = f"{start:.3f}" if start > 0 else "none"
         p["loop-file"] = "inf" if loop else "no"
         self.set_volume(100)  # a reused tile starts at full volume again
+        self.keep_sound = False
         self._set("pause", False)
         self._state.update({"time-pos": 0.0, "duration": item.duration or 0.0})
         p.loadfile(item.path)
