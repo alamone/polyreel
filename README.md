@@ -6,12 +6,13 @@ Play a whole folder of videos **at the same time**, packed into one window like 
 masonry wall. Landscape, portrait, square and ultrawide videos all keep their shape
 and stay roughly the same size, fitted together like puzzle pieces to fill the window.
 
-- **Smart packing.** Videos are arranged in nested rows and columns, and no video
-  is allowed to dominate: sizes stay within about 1.5x of each other. Where a tile
-  ends up a slightly different shape from its video, the video is enlarged to fill
-  it, trimming up to 15% off its edges (adjustable, or off), so neighbouring videos
-  line up edge to edge. Any space left over becomes an even border around the wall,
-  unless thin bars inside a few tiles let the wall fill much more of the window. A search (seeded with
+- **Smart packing.** Videos are arranged in nested rows and columns that line up
+  edge to edge, and no video is allowed to dominate: sizes stay within about 1.5x
+  of each other. Videos are always shown whole by default; space they can't fill
+  becomes an even border around the wall, or thin bars inside a few tiles when
+  that lets the wall fill much more of the window. If you'd rather have less black,
+  *Crop edges to fill gaps* lets videos be enlarged to fill their tiles, trimming
+  a little off their edges (up to the percentage you choose). A search (seeded with
   justified rows/columns, refined by simulated annealing) finds the arrangement
   that shows the most picture while avoiding big bars on any one video. When one
   video ends, its replacement takes over the same spot, so the rest of the wall
@@ -113,7 +114,7 @@ the result is in `dist\Polyreel`.
 | Max simultaneous videos | Hard cap on concurrent streams. Use **Benchmark…** to measure. |
 | Smallest video size | No video is shrunk below this % of the window area (25% ≈ 2×2 grid, 11% ≈ 3×3, 6% ≈ 4×4, 4% ≈ 5×5). |
 | Queue look-ahead | 1 = strict queue order. N > 1 lets one of the next N videos jump ahead if its shape fits the free space better. |
-| Crop edges to fill gaps | How much of a video's width or height may be trimmed so it fills its tile (default 15%; 0% always shows whole videos with bars). |
+| Crop edges to fill gaps | How much of a video's width or height may be trimmed so it fills its tile. Default 0%: videos are always shown whole, with black bars where needed. |
 | Sound | Video under the mouse / All videos at once / Silent (see above). |
 | Hardware decoding | `auto-safe` (default) offloads decoding to the GPU, which allows far more streams. |
 | Endless playback | When the queue runs out, queue everything already played again. |

@@ -48,6 +48,11 @@ RESTARTS = 4
 MAX_RUNS = 40
 # Keep the current arrangement unless another scores clearly better, so the
 # wall doesn't reshuffle when a video is replaced by one of similar shape.
+# Seconds the search may take: for a final layout, and for the quick checks
+# made while deciding which videos fit.  None means a fixed amount of work
+# instead (deterministic; used by the tests).
+SEARCH_BUDGET: float | None = 0.25
+QUICK_BUDGET: float | None = 0.08
 STICKY = 0.06
 STICKY_FILL = 0.03
 W_STABILITY = 0.25
@@ -506,7 +511,7 @@ def _towards_square(aspects: dict) -> dict:
 def solve(items: Sequence[tuple[Hashable, float]], width: float, height: float,
           min_area: float = 0.0, prev: Layout | None = None,
           effort: float = 1.0, seed: int | None = None,
-          budget: float | None = 0.25, crop: float = 0.0) -> Layout:
+          budget=..., crop: float = 0.0) -> Layout:
     """Find a good layout for ``items`` (``(key, aspect)`` pairs).
 
     ``min_area`` is the smallest allowed video as a fraction of window area;
@@ -519,6 +524,8 @@ def solve(items: Sequence[tuple[Hashable, float]], width: float, height: float,
     """
     if not items or width <= 0 or height <= 0:
         return Layout(tree=None)
+    if budget is ...:
+        budget = SEARCH_BUDGET
     aspects = {k: max(0.05, min(20.0, float(a))) for k, a in items}
     keys = [k for k, _ in items]
     prev_rects = None

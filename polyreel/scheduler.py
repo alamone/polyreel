@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from . import layout
 from .layout import Layout, solve
 from .playlist import Item
 
@@ -40,7 +41,7 @@ def plan(playing: list[Item], queued: list[Item], width: float, height: float,
     while len(keep) > 1:
         lay = solve(_items(keep), width, height, min_area, prev, effort=0, crop=crop)
         if not lay.valid:
-            lay = solve(_items(keep), width, height, min_area, prev, effort=0.5, budget=0.08, crop=crop)
+            lay = solve(_items(keep), width, height, min_area, prev, effort=0.5, budget=layout.QUICK_BUDGET, crop=crop)
         if lay.valid:
             break
         result.demote.append(keep.pop())
@@ -65,7 +66,7 @@ def plan(playing: list[Item], queued: list[Item], width: float, height: float,
             trial = current + [cand]
             lay = solve(_items(trial), width, height, min_area, prev, effort=0, crop=crop)
             if not lay.valid and cand is window[0]:
-                lay = solve(_items(trial), width, height, min_area, prev, effort=0.4, budget=0.08, crop=crop)
+                lay = solve(_items(trial), width, height, min_area, prev, effort=0.4, budget=layout.QUICK_BUDGET, crop=crop)
             if (lay.valid or not current) and (best is None or lay.score > best[1].score):
                 best = (cand, lay)
         if best is None:

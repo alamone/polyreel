@@ -15,7 +15,7 @@ class Settings:
     max_streams: int = 6
     min_area_pct: float = 4.0      # smallest video, as % of the window area
     gap: int = 2                   # pixels between videos
-    crop_pct: float = 15.0         # how much of a video's edges may be cropped to fill gaps
+    crop_pct: float = 0.0          # how much of a video's edges may be cropped to fill gaps
     lookahead: int = 4             # >1 lets a later queued video jump ahead if it fits better
     sound: str = "hover"           # "hover": video under the mouse, "all", or "silent"
     endless: bool = False

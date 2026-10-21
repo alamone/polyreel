@@ -59,11 +59,27 @@ def test_min_area_flag():
     assert L.solve(items, W, H, min_area=0.03).valid
 
 
-def test_adapt_swaps_similar_tile_in_place():
+def test_adapt_keeps_other_tiles_in_place():
+    # Video 0 ends and a new video of the same shape (99) replaces it: the
+    # adapted arrangement must leave every other tile exactly where it was.
     items = list(enumerate([16 / 9, 16 / 9, 9 / 16, 4 / 3]))
-    first = L.solve(items, W, H)
-    # Video 0 ends; a new 16:9 video (99) takes its place.
-    second = L.solve([(99, 16 / 9)] + items[1:], W, H, prev=first)
+    first = L.solve(items, W, H, seed=1, budget=None)
+    new = [(99, 16 / 9)] + items[1:]
+    tree, stretch = L.adapt(first, [k for k, _ in new], dict(new), W, H)
+    _, widen, _, _ = L._analyse(tree, dict(new), stretch, W, H, 0.0)
+    rects = L.place(tree, L.cells(dict(new), stretch), W, H, 0.0, widen)
+    for k in (1, 2, 3):
+        a, b = first.rects[k], rects[k]
+        assert abs(a.x - b.x) < 1 and abs(a.y - b.y) < 1 and abs(a.w - b.w) < 1
+    assert abs(rects[99].area - first.rects[0].area) < 1
+
+
+def test_solver_keeps_arrangement_when_nothing_is_better():
+    # Four equal videos tile the window perfectly; replacing one with an
+    # identical shape must not move anything.
+    items = list(enumerate([16 / 9] * 4))
+    first = L.solve(items, W, H, seed=1, budget=None)
+    second = L.solve([(99, 16 / 9)] + items[1:], W, H, prev=first, seed=2, budget=None)
     for k in (1, 2, 3):
         a, b = first.rects[k], second.rects[k]
         assert abs(a.x - b.x) < 1 and abs(a.y - b.y) < 1 and abs(a.w - b.w) < 1
