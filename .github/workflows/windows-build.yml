@@ -19,6 +19,11 @@ on:
 permissions:
   contents: write   # to publish releases
 
+# A newer push to the same branch or tag supersedes a build still running.
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
