@@ -167,7 +167,7 @@ def test_perf_monitor_levels():
     assert m.update({1: Sample(5, 30)}, 1.0) == GREEN
 
 
-def _run_bench(capacity, limit=32):
+def _run_bench(capacity, limit=64):
     """Simulate a machine that plays up to ``capacity`` streams smoothly."""
     b = BenchmarkPlan(limit=limit)
     tried = []
@@ -177,7 +177,7 @@ def _run_bench(capacity, limit=32):
     return b.recommended, tried
 
 
-@pytest.mark.parametrize("capacity", [0, 1, 2, 3, 5, 8, 9, 11, 13, 20, 31, 32, 50])
+@pytest.mark.parametrize("capacity", [0, 1, 2, 3, 5, 8, 9, 11, 13, 20, 31, 32, 40, 50, 63, 64, 100])
 def test_benchmark_finds_capacity_quickly(capacity):
     from polyreel.perf import BENCH_STEPS
     recommended, tried = _run_bench(capacity)

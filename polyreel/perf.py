@@ -82,7 +82,7 @@ def classify(ratio: float, current: str = IDLE, yellow_at: float = YELLOW_AT,
 
 
 # Stream counts the benchmark can try.
-BENCH_STEPS = [1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 32]
+BENCH_STEPS = [1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 32, 48, 64]
 BENCH_START = 8
 
 
@@ -96,7 +96,7 @@ class BenchmarkPlan:
     measurements instead of trying every count in turn.
     """
 
-    def __init__(self, limit: int = 32, max_drop: float = DEFAULT_MAX_DROP) -> None:
+    def __init__(self, limit: int = 64, max_drop: float = DEFAULT_MAX_DROP) -> None:
         self.steps = [s for s in BENCH_STEPS if s <= limit] or [1]
         self.max_drop = max_drop
         self.passed_i = -1                 # highest index known to pass

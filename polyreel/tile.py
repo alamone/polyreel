@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QPalette
@@ -13,6 +14,9 @@ from .mpvlib import mpv
 from .perf import Sample
 
 ANIM_MS = 260
+# Starting a player (and its video output) can take a good fraction of a
+# second, so players start on background threads, a few at a time.
+_starting = threading.BoundedSemaphore(4)
 
 
 class VideoTile(QWidget):
@@ -22,6 +26,8 @@ class VideoTile(QWidget):
     finished = Signal(object)
     failed = Signal(object, str)
     shape_changed = Signal(object, float)
+    ready = Signal(object)          # the player has started
+    _player_started = Signal()      # internal: from the starter thread
 
     def __init__(self, parent: QWidget, hwdec: str = "auto-safe") -> None:
         super().__init__(parent)
@@ -71,19 +77,50 @@ class VideoTile(QWidget):
         vo = os.environ.get("POLYREEL_VO")  # e.g. "x11" for headless testing
         if vo:
             opts["vo"] = vo
-        self.player = mpv.MPV(**opts)
-        try:
-            self.player["drag-and-drop"] = "no"   # drops go to the app, not one tile
-        except Exception:
-            pass
+        self.player = None
+        self._pending: list[tuple] = []   # commands sent before the player started
+        self._started = threading.Event()
+        self._player_started.connect(self._flush)
+        threading.Thread(target=self._start_player, args=(opts,), daemon=True,
+                         name="mpv-start").start()
 
-        for name in self._state:
-            self.player.observe_property(name, self._on_state)
-        self.player.observe_property("eof-reached", self._on_eof)
-        self.player.observe_property("video-params", self._on_video_params)
-        self.player.register_event_callback(self._on_event)
-        self.player.register_key_binding("MBTN_LEFT", self._on_left)
-        self.player.register_key_binding("MBTN_RIGHT", self._on_right)
+    def _start_player(self, opts: dict) -> None:
+        """Starter thread: create the player without holding up the GUI."""
+        player = None
+        with _starting:
+            try:
+                player = mpv.MPV(**opts)
+                try:
+                    player["drag-and-drop"] = "no"   # drops go to the app, not one tile
+                except Exception:
+                    pass
+                for name in self._state:
+                    player.observe_property(name, self._on_state)
+                player.observe_property("eof-reached", self._on_eof)
+                player.observe_property("video-params", self._on_video_params)
+                player.register_event_callback(self._on_event)
+                player.register_key_binding("MBTN_LEFT", self._on_left)
+                player.register_key_binding("MBTN_RIGHT", self._on_right)
+            except Exception:
+                player = None
+        self.player = player
+        self._started.set()
+        self._player_started.emit()
+
+    @property
+    def is_ready(self) -> bool:
+        return self._started.is_set()
+
+    def _flush(self) -> None:
+        """GUI thread: send what was asked of the player while it started."""
+        pending, self._pending = self._pending, []
+        if self.player is None:
+            if self.item is not None:
+                self.failed.emit(self, "player could not start")
+        else:
+            for args in pending:
+                self._send(args)
+        self.ready.emit(self)
 
     # -- mpv callbacks (event thread) ----------------------------------------
     def _on_event(self, event) -> None:
@@ -126,45 +163,55 @@ class VideoTile(QWidget):
             self.right_clicked.emit(self)
 
     # -- control (GUI thread) -------------------------------------------------
+    def _command(self, *args) -> None:
+        """Send a command without waiting for the player to carry it out
+        (queued, in order, if the player is still starting)."""
+        if self.player is None or self._pending:
+            self._pending.append(args)
+        else:
+            self._send(args)
+
+    def _send(self, args: tuple) -> None:
+        try:
+            self.player.command_async(*args)
+        except Exception:
+            pass
+
     def _set(self, name: str, value) -> None:
         """Change a property without waiting for the player to apply it."""
         if isinstance(value, bool):
             value = "yes" if value else "no"
-        try:
-            self.player.command_async("set", name, str(value))
-        except Exception:
-            pass
+        self._command("set", name, str(value))
 
     def load(self, item, start: float = 0.0, loop: bool = False, hwdec: str | None = None) -> None:
         self.item = item
         self._active = False
         self._paused = False
-        p = self.player
         if hwdec:
-            p["hwdec"] = hwdec
-        p["start"] = f"{start:.3f}" if start > 0 else "none"
-        p["loop-file"] = "inf" if loop else "no"
+            self._set("hwdec", hwdec)
+        self._set("start", f"{start:.3f}" if start > 0 else "none")
+        self._set("loop-file", "inf" if loop else "no")
         self.set_volume(100)  # a reused tile starts at full volume again
         self.keep_sound = False
         self._set("pause", False)
         self._state.update({"time-pos": 0.0, "duration": item.duration or 0.0})
-        p.loadfile(item.path)
+        self._command("loadfile", item.path)
 
     def stop(self) -> None:
         self.item = None
         self._active = False
         if self._anim:
             self._anim.stop()
-        try:
-            self.player.command("stop")
-        except Exception:
-            pass
+        self._command("stop")
         self.hide()
 
-    def shutdown(self) -> None:
+    def shutdown(self, wait: float = 2.0) -> None:
+        """Stop the player for good (any thread)."""
         self.item = None
+        self._started.wait(wait)
         try:
-            self.player.terminate()
+            if self.player is not None:
+                self.player.terminate()
         except Exception:
             pass
 
@@ -185,11 +232,7 @@ class VideoTile(QWidget):
 
     def seek(self, seconds: float, exact: bool = True) -> None:
         self._state["time-pos"] = seconds
-        try:
-            self.player.command_async("seek", str(max(0.0, seconds)),
-                                      "absolute" if exact else "absolute+keyframes")
-        except Exception:
-            pass
+        self._command("seek", str(max(0.0, seconds)), "absolute" if exact else "absolute+keyframes")
 
     @property
     def volume(self) -> int:

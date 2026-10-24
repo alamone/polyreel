@@ -26,6 +26,8 @@ from .ui import BAR_HEIGHT, CloseButton, Drawer, TileControls, TrafficLight, lig
 HOVER_ZONE = 24        # px from the bottom edge that reveals the drawer
 HIDE_DELAY_MS = 700
 SHUTDOWN_WAIT = 2.0    # seconds to wait for players to stop when closing
+BENCH_LIMIT = 64       # most videos the benchmark tries at once
+BENCH_START_WAIT = 20  # seconds a benchmark round waits for its players to start
 EMPTY_TEXT = ("Drop videos or folders here\n\n"
               "O  add files     Ctrl+O  add a folder     Ctrl+,  settings")
 
@@ -37,6 +39,7 @@ class BenchState:
     tiles: list[VideoTile] = field(default_factory=list)
     layout: L.Layout | None = None
     t0: float = 0.0
+    wait_start: float = 0.0
     c0: dict = field(default_factory=dict)
     timer: QTimer | None = None
 
@@ -822,34 +825,62 @@ class MainWindow(QMainWindow):
         for t in self.tiles.values():
             t.set_paused(True)
             t.hide()
-        self.bench = BenchState(plan=BenchmarkPlan(limit=32, max_drop=self.settings.max_drop),
+        self.bench = BenchState(plan=BenchmarkPlan(limit=BENCH_LIMIT, max_drop=self.settings.max_drop),
                                 sources=sources)
         self.perf.reset()
         self._bench_step()
 
     def _bench_layout(self) -> None:
+        """Lay out the round's videos (including ones not started yet)."""
         b = self.bench
         w, h = self.stage_size()
-        items = [(i, t.item.aspect or DEFAULT_ASPECT) for i, t in enumerate(b.tiles)]
-        b.layout = L.solve(items, w, h, effort=0.3, crop=self.settings.crop)
+        items = [(i, b.sources[i % len(b.sources)].aspect or DEFAULT_ASPECT)
+                 for i in range(b.plan.current)]
+        # A quick layout: the benchmark only needs the videos on screen, and a
+        # longer search would hold up the window.
+        b.layout = L.solve(items, w, h, effort=0, crop=self.settings.crop)
         for i, t in enumerate(b.tiles):
             self._place_tile(t, self._rect_for(b.layout.rects[i]), animate=False)
 
     def _bench_step(self) -> None:
         b = self.bench
-        k = b.plan.current
         # Start every round from scratch: players left over from an
         # overloaded round are still behind and would skew the next one.
         for tile in b.tiles:
             self._release(tile)
         b.tiles = []
-        for i in range(k):
+        self._update_message()
+        # Lay out before the new players start, while the machine is quiet.
+        self._bench_layout()
+        self._bench_add_tiles()
+
+    def _bench_add_tiles(self) -> None:
+        """Add the round's players a few at a time, letting the window
+        repaint and respond in between."""
+        b = self.bench
+        if b is None:
+            return
+        k = b.plan.current
+        for _ in range(min(4, k - len(b.tiles))):
+            i = len(b.tiles)
             tile = self._acquire()
             tile.load(b.sources[i % len(b.sources)], loop=True, hwdec=self.settings.hwdec)
             tile.set_muted(True)
             b.tiles.append(tile)
-        self._bench_layout()
+            self._place_tile(tile, self._rect_for(b.layout.rects[i]), animate=False)
+        if len(b.tiles) < k:
+            self._bench_after(0, self._bench_add_tiles)
+            return
         self._update_message()
+        b.wait_start = time.monotonic()
+        self._bench_wait_ready()
+
+    def _bench_wait_ready(self) -> None:
+        """Players start in the background; time them only once all have."""
+        b = self.bench
+        if not all(t.is_ready for t in b.tiles) and time.monotonic() - b.wait_start < BENCH_START_WAIT:
+            self._bench_after(100, self._bench_wait_ready)
+            return
         # Warm up; a little longer after a failed round so the machine settles.
         settle = 3000 if b.plan.results and b.plan.results[-1][1] > b.plan.max_drop else 2000
         self._bench_after(settle, self._bench_measure_start)
