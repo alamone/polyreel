@@ -28,6 +28,7 @@ HIDE_DELAY_MS = 700
 SHUTDOWN_WAIT = 2.0    # seconds to wait for players to stop when closing
 BENCH_LIMIT = 64       # most videos the benchmark tries at once
 BENCH_START_WAIT = 20  # seconds a benchmark round waits for its players to start
+BENCH_DRAIN_WAIT = 30  # seconds the benchmark waits for a round's players to stop
 EMPTY_TEXT = ("Drop videos or folders here\n\n"
               "O  add files     Ctrl+O  add a folder     Ctrl+,  settings")
 
@@ -40,6 +41,9 @@ class BenchState:
     layout: L.Layout | None = None
     t0: float = 0.0
     wait_start: float = 0.0
+    draining: list[VideoTile] = field(default_factory=list)   # stopping, not yet stopped
+    finishing: bool = False
+    cancelled: bool = False
     c0: dict = field(default_factory=dict)
     timer: QTimer | None = None
 
@@ -122,6 +126,7 @@ class MainWindow(QMainWindow):
         self.light.clicked.connect(self.open_settings)
         self.perf = PerfMonitor(max_drop=self.settings.max_drop)
         self._bench_pending = False   # start a benchmark once sample videos are read
+        self._results_open = False    # benchmark results on screen: the wall waits
 
         self.tray: QSystemTrayIcon | None = None
         self._setup_tray()
@@ -287,7 +292,7 @@ class MainWindow(QMainWindow):
 
     def schedule(self) -> None:
         """Bump what no longer fits, start what does, and lay everything out."""
-        if self.bench or self.focus_tile:
+        if self.bench or self.focus_tile or self._results_open:
             return
         s = self.settings
         w, h = self.stage_size()
@@ -583,7 +588,11 @@ class MainWindow(QMainWindow):
             self.schedule_soon()
 
     def _update_message(self) -> None:
-        if self.bench:
+        if self.bench and self.bench.finishing:
+            text = "Finishing the benchmark…"
+        elif self.bench and self.bench.draining:
+            text = "Benchmarking: waiting for the last round's videos to stop…  (Esc to cancel)"
+        elif self.bench:
             text = f"Benchmarking: {self.bench.plan.current} videos at once…  (Esc to cancel)"
         elif not len(self.pl):
             text = EMPTY_TEXT
@@ -843,16 +852,44 @@ class MainWindow(QMainWindow):
             self._place_tile(t, self._rect_for(b.layout.rects[i]), animate=False)
 
     def _bench_step(self) -> None:
-        b = self.bench
         # Start every round from scratch: players left over from an
         # overloaded round are still behind and would skew the next one.
+        self._bench_drain(self._bench_start_round)
+
+    def _bench_drain(self, then) -> None:
+        """Stop the round's players, then call ``then`` once they really have
+        stopped: an overloaded player can take a while to get to it, and
+        until then it still loads the machine."""
+        b = self.bench
         for tile in b.tiles:
             self._release(tile)
-        b.tiles = []
+        b.draining, b.tiles = b.draining + b.tiles, []
+        b.wait_start = time.monotonic()
+        self._update_message()
+
+        def check() -> None:
+            if (any(not t.is_stopped for t in b.draining)
+                    and time.monotonic() - b.wait_start < BENCH_DRAIN_WAIT):
+                self._bench_after(100, check)
+                return
+            b.draining = []
+            then()
+        check()
+
+    def _bench_start_round(self) -> None:
+        b = self.bench
+        self._trim_pool(b.plan.current)
         self._update_message()
         # Lay out before the new players start, while the machine is quiet.
         self._bench_layout()
         self._bench_add_tiles()
+
+    def _trim_pool(self, keep: int) -> None:
+        """Shut down spare players beyond ``keep`` (in the background)."""
+        while len(self.pool) > max(0, keep):
+            tile = self.pool.pop(0)
+            self.all_tiles.remove(tile)
+            tile.retire()
 
     def _bench_add_tiles(self) -> None:
         """Add the round's players a few at a time, letting the window
@@ -927,20 +964,35 @@ class MainWindow(QMainWindow):
 
     def _bench_finish(self, cancelled: bool = False) -> None:
         b = self.bench
-        if b is None:
+        if b is None or b.finishing:
             return
         if b.timer:
             b.timer.stop()
-        for t in b.tiles:
-            self._release(t)
+        b.finishing, b.cancelled = True, cancelled
+        # Let the last round's players stop before anything else happens: on
+        # a machine they overloaded, the window can't respond until they do.
+        self._bench_drain(self._bench_done)
+
+    def _bench_done(self) -> None:
+        b = self.bench
         self.bench = None
+        self._trim_pool(self.settings.max_streams - len(self.tiles))
         self.perf.reset()
         for t in self.tiles.values():
             t.show()
-        self._resume_others()
         self._apply_layout(animate=False)
         self._update_message()
-        if not cancelled and b.plan.results:
+        # The wall stays paused while the results are shown.
+        self._results_open = True
+        try:
+            self._bench_report(b)
+        finally:
+            self._results_open = False
+        self._resume_others()
+        self.schedule_soon()
+
+    def _bench_report(self, b: BenchState) -> None:
+        if not b.cancelled and b.plan.results:
             s = self.settings
             # Keep the measurements: they link the two limits from now on.
             curve = DropCurve(b.plan.results)
@@ -951,7 +1003,6 @@ class MainWindow(QMainWindow):
                 s.max_streams, s.max_drop_pct = dlg.limits.values
                 self.perf.set_max_drop(s.max_drop)
                 s.save()
-        self.schedule_soon()
 
     # -------------------------------------------------------------- shutdown
     def closeEvent(self, e) -> None:

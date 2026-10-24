@@ -27,6 +27,7 @@ class VideoTile(QWidget):
     failed = Signal(object, str)
     shape_changed = Signal(object, float)
     ready = Signal(object)          # the player has started
+    retired = Signal(object)        # the player has been shut down
     _player_started = Signal()      # internal: from the starter thread
 
     def __init__(self, parent: QWidget, hwdec: str = "auto-safe") -> None:
@@ -79,6 +80,9 @@ class VideoTile(QWidget):
             opts["vo"] = vo
         self.player = None
         self._pending: list[tuple] = []   # commands sent before the player started
+        # Stops asked for and stops carried out (each written by one thread).
+        self._stops_sent = 0
+        self._stops_done = 0
         self._started = threading.Event()
         self._player_started.connect(self._flush)
         threading.Thread(target=self._start_player, args=(opts,), daemon=True,
@@ -115,11 +119,12 @@ class VideoTile(QWidget):
         """GUI thread: send what was asked of the player while it started."""
         pending, self._pending = self._pending, []
         if self.player is None:
+            self._stops_done = self._stops_sent
             if self.item is not None:
                 self.failed.emit(self, "player could not start")
         else:
-            for args in pending:
-                self._send(args)
+            for args, kwargs in pending:
+                self._send(args, kwargs)
         self.ready.emit(self)
 
     # -- mpv callbacks (event thread) ----------------------------------------
@@ -163,19 +168,26 @@ class VideoTile(QWidget):
             self.right_clicked.emit(self)
 
     # -- control (GUI thread) -------------------------------------------------
-    def _command(self, *args) -> None:
+    def _command(self, *args, **kwargs) -> None:
         """Send a command without waiting for the player to carry it out
         (queued, in order, if the player is still starting)."""
-        if self.player is None or self._pending:
-            self._pending.append(args)
+        if self.player is None and self._started.is_set():
+            callback = kwargs.get("callback")
+            if callback:
+                callback(None, None)        # no player: nothing to do
+        elif self.player is None or self._pending:
+            self._pending.append((args, kwargs))
         else:
-            self._send(args)
+            self._send(args, kwargs)
 
-    def _send(self, args: tuple) -> None:
+    def _send(self, args: tuple, kwargs: dict | None = None) -> None:
+        kwargs = kwargs or {}
         try:
-            self.player.command_async(*args)
+            self.player.command_async(*args, **kwargs)
         except Exception:
-            pass
+            callback = kwargs.get("callback")
+            if callback:
+                callback(None, None)
 
     def _set(self, name: str, value) -> None:
         """Change a property without waiting for the player to apply it."""
@@ -202,8 +214,27 @@ class VideoTile(QWidget):
         self._active = False
         if self._anim:
             self._anim.stop()
-        self._command("stop")
+        self._stops_sent += 1
+        self._command("stop", callback=self._stop_done)
         self.hide()
+
+    def _stop_done(self, *_):
+        self._stops_done += 1     # event thread
+
+    @property
+    def is_stopped(self) -> bool:
+        """True once every stop asked for has been carried out (a busy
+        player can take a while to get to it)."""
+        return self._stops_done >= self._stops_sent
+
+    def retire(self) -> None:
+        """Shut the player down in the background, then delete the tile."""
+        self.retired.connect(self.deleteLater)   # queued to the GUI thread
+
+        def run():
+            self.shutdown()
+            self.retired.emit(self)
+        threading.Thread(target=run, daemon=True, name="mpv-retire").start()
 
     def shutdown(self, wait: float = 2.0) -> None:
         """Stop the player for good (any thread)."""
