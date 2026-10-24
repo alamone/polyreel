@@ -6,8 +6,9 @@ import math
 import os
 import queue
 import threading
+import time
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRect, Qt, Signal
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QWidget
 
@@ -15,6 +16,11 @@ from .mpvlib import mpv
 from .perf import Sample
 
 ANIM_MS = 260
+# Properties watched continuously; they change rarely.  Position and
+# dropped-frame counts change with nearly every frame, and a Python callback
+# per frame per video swamps a big wall, so those are asked for (``poll``).
+WATCHED = ("duration", "volume", "container-fps")
+POLL_TEXT = "${=time-pos} ${=frame-drop-count} ${=decoder-frame-drop-count}"
 # Starting a player (and its video output) can take a good fraction of a
 # second, so players start on background threads, a few at a time.
 _starting = threading.BoundedSemaphore(4)
@@ -75,11 +81,15 @@ class VideoTile(QWidget):
         self.user_muted = False  # muted with its own speaker button (or by the sound mode)
         self.keep_sound = False  # volume changed by hand: heard even when not hovered
         self._anim: QPropertyAnimation | None = None
-        # Values mpv reports as they change, so the GUI never has to wait on
-        # a busy player to read them.
+        # Values the player reported, so the GUI never has to wait on a busy
+        # player to read them.
         self._state = {"time-pos": 0.0, "duration": 0.0, "volume": 100.0,
                        "frame-drop-count": 0, "decoder-frame-drop-count": 0,
                        "container-fps": None}
+        self._file = 0           # bumped per file, so late answers about the last one are ignored
+        self._poll_sent = 0.0    # when the last poll went out
+        self._poll_out = False   # a poll is waiting for its answer
+        self.polled_at = 0.0     # when the last answer about this file arrived
 
         opts = dict(
             wid=str(int(self.winId())),
@@ -101,7 +111,8 @@ class VideoTile(QWidget):
         if vo:
             opts["vo"] = vo
         self.player = None
-        self._pending: list[tuple] = []   # commands sent before the player started
+        self._pending: list[tuple] = []   # commands waiting to be sent, in order
+        self._retry_due = False
         # Stops asked for and stops carried out (each written by one thread).
         self._stops_sent = 0
         self._stops_done = 0
@@ -120,7 +131,7 @@ class VideoTile(QWidget):
                     player["drag-and-drop"] = "no"   # drops go to the app, not one tile
                 except Exception:
                     pass
-                for name in self._state:
+                for name in WATCHED:
                     player.observe_property(name, self._on_state)
                 player.observe_property("eof-reached", self._on_eof)
                 player.observe_property("video-params", self._on_video_params)
@@ -139,15 +150,31 @@ class VideoTile(QWidget):
 
     def _flush(self) -> None:
         """GUI thread: send what was asked of the player while it started."""
-        pending, self._pending = self._pending, []
         if self.player is None:
+            pending, self._pending = self._pending, []
+            for _args, kwargs in pending:
+                if kwargs.get("callback"):
+                    kwargs["callback"](None, None)
             self._stops_done = self._stops_sent
             if self.item is not None:
                 self.failed.emit(self, "player could not start")
         else:
-            for args, kwargs in pending:
-                self._send(args, kwargs)
+            self._send_pending()
         self.ready.emit(self)
+
+    def _send_pending(self) -> None:
+        self._retry_due = False
+        while self._pending:
+            args, kwargs = self._pending[0]
+            if not self._send(args, kwargs):
+                self._retry_later()
+                return
+            self._pending.pop(0)
+
+    def _retry_later(self) -> None:
+        if not self._retry_due:
+            self._retry_due = True
+            QTimer.singleShot(100, self._send_pending)
 
     # -- mpv callbacks (event thread) ----------------------------------------
     def _on_event(self, event) -> None:
@@ -192,24 +219,55 @@ class VideoTile(QWidget):
     # -- control (GUI thread) -------------------------------------------------
     def _command(self, *args, **kwargs) -> None:
         """Send a command without waiting for the player to carry it out
-        (queued, in order, if the player is still starting)."""
+        (kept, in order, while the player starts or its queue is full)."""
         if self.player is None and self._started.is_set():
             callback = kwargs.get("callback")
             if callback:
                 callback(None, None)        # no player: nothing to do
         elif self.player is None or self._pending:
             self._pending.append((args, kwargs))
-        else:
-            self._send(args, kwargs)
+        elif not self._send(args, kwargs):
+            self._pending.append((args, kwargs))
+            self._retry_later()
 
-    def _send(self, args: tuple, kwargs: dict | None = None) -> None:
-        kwargs = kwargs or {}
+    def _send(self, args: tuple, kwargs: dict) -> bool:
+        """False if the player's message queue is full (try again later)."""
         try:
             self.player.command_async(*args, **kwargs)
+        except MemoryError:
+            return False
         except Exception:
             callback = kwargs.get("callback")
             if callback:
                 callback(None, None)
+        return True
+
+    def poll(self) -> None:
+        """Ask for the position and dropped-frame counters; the answer
+        arrives in the background."""
+        if not self._active or self.player is None:
+            return
+        now = time.monotonic()
+        if now - self._poll_sent < 0.1 or (self._poll_out and now - self._poll_sent < 3.0):
+            return
+        self._poll_sent, self._poll_out = now, True
+        file = self._file
+        self._command("expand-text", POLL_TEXT, callback=lambda e, r: self._on_poll(file, e, r))
+
+    def _on_poll(self, file: int, error, result) -> None:   # event thread
+        self._poll_out = False
+        if error is not None or file != self._file or not isinstance(result, str):
+            return
+        parts = result.split(" ")
+        if len(parts) != 3:
+            return
+        for name, text, kind in zip(("time-pos", "frame-drop-count", "decoder-frame-drop-count"),
+                                    parts, (float, int, int)):
+            try:
+                self._state[name] = kind(float(text))
+            except ValueError:
+                pass
+        self.polled_at = time.monotonic()
 
     def _set(self, name: str, value) -> None:
         """Change a property without waiting for the player to apply it."""
@@ -228,7 +286,10 @@ class VideoTile(QWidget):
         self.set_volume(100)  # a reused tile starts at full volume again
         self.keep_sound = False
         self._set("pause", False)
-        self._state.update({"time-pos": 0.0, "duration": item.duration or 0.0})
+        self._file += 1
+        self.polled_at = 0.0
+        self._state.update({"time-pos": 0.0, "duration": item.duration or 0.0,
+                            "frame-drop-count": 0, "decoder-frame-drop-count": 0})
         self._command("loadfile", item.path)
 
     def stop(self) -> None:
@@ -236,12 +297,17 @@ class VideoTile(QWidget):
         self._active = False
         if self._anim:
             self._anim.stop()
+        self._file += 1
         self._stops_sent += 1
-        self._command("stop", callback=self._stop_done)
+        n = self._stops_sent
+        self._command("stop", callback=lambda e, r: self._stop_done(n, e))
         self.hide()
 
-    def _stop_done(self, *_):
-        self._stops_done += 1     # event thread
+    def _stop_done(self, n: int, error) -> None:   # event thread
+        # python-mpv reports a message-queue overflow to every waiting
+        # command; that isn't the answer, which still follows.
+        if not isinstance(error, mpv.EventOverflowError):
+            self._stops_done = max(self._stops_done, n)
 
     @property
     def is_stopped(self) -> bool:
@@ -308,12 +374,14 @@ class VideoTile(QWidget):
             self._set("mute", muted)
 
     def sample(self) -> Sample | None:
-        """Cumulative dropped-frame counters, or None if nothing is playing."""
-        if not self._active:
+        """Cumulative dropped-frame counters as of the last poll, or None if
+        nothing is playing (or no answer has come back yet)."""
+        if not self._active or not self.polled_at:
             return None
         st = self._state
         dropped = int(st["frame-drop-count"] or 0) + int(st["decoder-frame-drop-count"] or 0)
-        return Sample(dropped, float(st["container-fps"] or 30.0))
+        return Sample(dropped, float(st["container-fps"] or 30.0), self.polled_at,
+                      float(st["time-pos"] or 0.0))
 
     def move_to(self, rect: QRect, animate: bool) -> None:
         if self._anim:

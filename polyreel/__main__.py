@@ -32,6 +32,13 @@ def main() -> int:
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication, QMessageBox
 
+    # Many players each report back on their own thread; let the window's
+    # thread get its turn quickly so it stays responsive.
+    sys.setswitchinterval(0.001)
+    if sys.platform == "win32":
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.SetThreadPriority(k32.GetCurrentThread(), 2)   # THREAD_PRIORITY_HIGHEST
     app = QApplication(sys.argv)
     app.setOrganizationName("Polyreel")
     app.setApplicationName("Polyreel")

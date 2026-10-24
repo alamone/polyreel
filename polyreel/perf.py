@@ -19,8 +19,39 @@ HYSTERESIS = 0.6
 @dataclass
 class Sample:
     """Cumulative counters read from one player."""
-    dropped: int   # frames dropped by the decoder and the video output
-    fps: float     # nominal frame rate of the file
+    dropped: int     # frames dropped by the decoder and the video output
+    fps: float       # nominal frame rate of the file
+    at: float = 0.0  # when the counters were read (time.monotonic; 0 = unknown)
+    pos: float = 0.0  # playback position then, in seconds
+
+
+# A player whose position falls behind the clock by more than this share is
+# playing in slow motion (as an overloaded one does instead of dropping frames).
+SLOW_TOLERANCE = 0.04
+
+
+def frames_lost(before: Sample, after: Sample, dt: float | None = None,
+                tolerance: float = SLOW_TOLERANCE) -> tuple[float, float] | None:
+    """Frames lost and frames expected between two readings of one player.
+
+    Lost frames are the ones it dropped plus the ones it never got to by
+    falling behind the clock.  None if the readings can't be compared (a new
+    file, or no time between them)."""
+    if after.dropped < before.dropped:
+        return None
+    if before.at and after.at:
+        dt = after.at - before.at
+    if not dt or dt <= 0:
+        return None
+    expected = after.fps * dt
+    lost = float(after.dropped - before.dropped)
+    if before.at and after.at:
+        moved = after.pos - before.pos
+        if moved >= 0:                     # not looped or sought backwards
+            behind = 1.0 - moved / dt
+            if behind > tolerance:
+                lost += behind * expected
+    return min(lost, expected), expected
 
 
 class PerfMonitor:
@@ -33,7 +64,7 @@ class PerfMonitor:
         self.instant = 0.0        # last interval's fraction
         self.status = IDLE
         self.streams = 0
-        self._last: dict[object, int] = {}
+        self._last: dict[object, Sample] = {}
 
     def set_max_drop(self, max_drop: float) -> None:
         """Red past the acceptable drop rate, yellow from a fifth of it."""
@@ -48,14 +79,18 @@ class PerfMonitor:
 
     def update(self, samples: dict[object, Sample], dt: float) -> str:
         """Feed the counters of every *playing* player, ``dt`` seconds apart."""
-        dropped = 0
+        dropped = 0.0
         expected = 0.0
         for key, s in samples.items():
             prev = self._last.get(key)
-            if prev is not None and s.dropped >= prev:
-                dropped += s.dropped - prev
-                expected += s.fps * dt
-        self._last = {k: s.dropped for k, s in samples.items()}
+            # A busy player may not have answered since last time; its
+            # next fresh reading then spans the whole gap.
+            if prev is not None and (s.at == 0 or s.at != prev.at):
+                change = frames_lost(prev, s, dt)
+                if change:
+                    dropped += change[0]
+                    expected += change[1]
+        self._last = dict(samples)
         self.streams = len(samples)
         if not samples:
             self.reset()

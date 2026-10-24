@@ -297,3 +297,24 @@ def test_plan_always_starts_one_video_even_if_too_big():
     q = _items(16 / 9, 16 / 9, 16 / 9, 16 / 9, 16 / 9)
     p = plan([], q, W, H, max_streams=5, min_area=0.9)
     assert p.start == q[:1]
+
+
+def test_frames_lost_counts_slow_motion_as_lost():
+    from polyreel.perf import frames_lost
+    a = Sample(10, 30.0, at=100.0, pos=5.0)
+    smooth = Sample(10, 30.0, at=102.0, pos=7.0)
+    assert frames_lost(a, smooth) == (0.0, 60.0)
+    dropping = Sample(16, 30.0, at=102.0, pos=7.0)
+    assert frames_lost(a, dropping) == (6.0, 60.0)
+    half_speed = Sample(10, 30.0, at=102.0, pos=6.0)      # fell a second behind
+    assert frames_lost(a, half_speed) == pytest.approx((30.0, 60.0))
+    looped = Sample(10, 30.0, at=102.0, pos=1.0)          # wrapped around: drops only
+    assert frames_lost(a, looped) == (0.0, 60.0)
+    assert frames_lost(a, Sample(3, 30.0, at=102.0, pos=7.0)) is None   # a new file
+
+
+def test_perf_monitor_turns_red_for_slow_motion():
+    m = PerfMonitor(smoothing=1.0)
+    m.update({1: Sample(0, 30.0, at=1.0, pos=0.0)}, 1.0)
+    status = m.update({1: Sample(0, 30.0, at=2.0, pos=0.5)}, 1.0)   # half speed, no drops
+    assert status == RED and m.ratio == pytest.approx(0.5)

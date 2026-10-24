@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QLabel, QMainWindow,
                                QMenu, QMessageBox, QSystemTrayIcon, QToolTip, QWidget)
 
 from . import layout as L
-from .perf import IDLE, BenchmarkPlan, DropCurve, PerfMonitor
+from .perf import IDLE, BenchmarkPlan, DropCurve, PerfMonitor, frames_lost
 from .playlist import PLAYABLE_EXTENSIONS, Item, Playlists, expand_paths
 from .probe import NOT_VIDEO, Prober
 from .scheduler import DEFAULT_ASPECT, plan
@@ -741,6 +741,7 @@ class MainWindow(QMainWindow):
             y = min(y, self.stage.height() - HOVER_ZONE - c.height())
         c.setGeometry(g.x(), max(g.y(), y), g.width(), c.height())
         self._controls_target = tile
+        tile.poll()                       # keep its seek bar current
         c.update_state(tile.position(), tile.duration(), tile.paused, tile.volume, tile.user_muted)
         if not c.isVisible():
             c.show()
@@ -807,6 +808,7 @@ class MainWindow(QMainWindow):
             tiles = {i: t for i, t in self.tiles.items() if not t.paused}
         samples = {}
         for key, t in tiles.items():
+            t.poll()                      # the answer arrives in time for the next tick
             s = t.sample()
             if s is not None:
                 samples[key] = s
@@ -957,9 +959,13 @@ class MainWindow(QMainWindow):
         self._bench_wait_ready()
 
     def _bench_wait_ready(self) -> None:
-        """Players start in the background; time them only once all have."""
+        """Players start in the background and load their files when they
+        get to it; time them only once every one is playing."""
         b = self.bench
-        if not all(t.is_ready for t in b.tiles) and time.monotonic() - b.wait_start < BENCH_START_WAIT:
+        for t in b.tiles:
+            t.poll()
+        playing = all(t.is_ready and t.sample() is not None for t in b.tiles)
+        if not playing and time.monotonic() - b.wait_start < BENCH_START_WAIT:
             self._bench_after(100, self._bench_wait_ready)
             return
         # Warm up; a little longer after a failed round so the machine settles.
@@ -975,6 +981,7 @@ class MainWindow(QMainWindow):
     def _bench_counters(self) -> dict:
         out = {}
         for t in self.bench.tiles:
+            t.poll()
             s = t.sample()
             if s is not None:
                 out[id(t)] = s
@@ -990,15 +997,20 @@ class MainWindow(QMainWindow):
         elapsed = time.monotonic() - b.t0
         c1 = self._bench_counters()
         dropped = expected = 0.0
+        stuck = len(b.tiles) - len(b.c0)     # never got going
         for key, s0 in b.c0.items():
             s1 = c1.get(key)
-            if s1 is not None and s1.dropped >= s0.dropped:
-                dropped += s1.dropped - s0.dropped
-                expected += s1.fps * elapsed
-        # A player that never got going counts as fully dropped.
-        missing = len(b.tiles) - len(b.c0)
-        expected += missing * 30 * elapsed
-        dropped += missing * 30 * elapsed
+            # Each player's counters are read at its own pace (a busy one
+            # answers late), so its frames are timed by when they were read.
+            change = frames_lost(s0, s1, tolerance=0.02) if s1 is not None and s1.at > s0.at else None
+            if change:
+                dropped += change[0]
+                expected += change[1]
+            else:
+                stuck += 1                   # too busy to even answer
+        # A player that couldn't play (or answer) counts as fully dropped.
+        expected += stuck * 30 * elapsed
+        dropped += stuck * 30 * elapsed
         ratio = dropped / expected if expected else 1.0
         b.plan.record(ratio)
         if b.plan.done:
