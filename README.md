@@ -19,13 +19,19 @@ and stay roughly the same size, fitted together like puzzle pieces to fill the w
   doesn't jump around.
 - **Your limits.** *Max simultaneous videos* and *Smallest video size* (as a % of
   the window area). Videos that would break either limit wait in the queue.
-  The first time you add videos, an optional **benchmark** plays your own files
-  several at a time and recommends the highest count that drops at most 5% of
-  frames (where the traffic light would turn red). It starts at 8, doubles while
-  that holds and narrows in once it doesn't,
-  so it needs only 3 to 5 measurements (about half a minute).
+- **Benchmark, with linked limits.** On first start Polyreel asks for a few
+  sample videos and benchmarks them: it plays your own files several at a time
+  and measures the share of frames dropped at each count. It starts at 8,
+  doubles while that stays acceptable and narrows in once it doesn't, so it
+  needs only 3 to 5 measurements (about half a minute). Afterwards
+  *Acceptable dropped frames* (default 5%) and *Max simultaneous videos* are
+  linked through those measurements: loosen the drop rate and the video count
+  rises to what your computer managed at that rate; raise the video count and
+  the drop rate shows what to expect. Rerun it any time from Settings.
 - **Performance traffic light** in a window corner (and the system tray):
-  green = smooth, yellow = some frames dropped (≥1%), red = struggling (≥5%).
+  green = smooth, yellow = some frames dropped (from a fifth of your acceptable
+  rate), red = struggling (past it). Below the lamps is the percentage of frames
+  currently being dropped across all playing videos.
   Hover it for numbers; click it for settings.
 - **Click a video to focus it.** Everything else pauses, the video fills the window,
   and when it finishes the wall comes back and resumes. Click again or press Esc to
@@ -112,7 +118,8 @@ the result is in `dist\Polyreel`.
 
 | Setting | Meaning |
 |---|---|
-| Max simultaneous videos | Hard cap on concurrent streams. Use **Benchmark…** to measure. |
+| Acceptable dropped frames | How many dropped frames count as smooth enough (default 5%). Sets the traffic light's levels, and after a benchmark sets *Max simultaneous videos*. |
+| Max simultaneous videos | Hard cap on concurrent streams. After a benchmark, changing it updates *Acceptable dropped frames* to the measured rate. Use **Run benchmark…** to measure. |
 | Smallest video size | No video is shrunk below this % of the window area (25% ≈ 2×2 grid, 11% ≈ 3×3, 6% ≈ 4×4, 4% ≈ 5×5). |
 | Queue look-ahead | 1 = strict queue order. N > 1 lets one of the next N videos jump ahead if its shape fits the free space better. |
 | Crop edges to fill gaps | How much of a video's width or height may be trimmed so it fills its tile. Default 0%: videos are always shown whole, with black bars where needed. |

@@ -6,9 +6,12 @@ from dataclasses import dataclass
 
 GREEN, YELLOW, RED, IDLE = "green", "yellow", "red", "idle"
 
-# Fraction of frames dropped (smoothed) at which the light changes colour.
-YELLOW_AT = 0.01
-RED_AT = 0.05
+# Default acceptable fraction of frames dropped (users can change it).  The
+# traffic light turns red past it and yellow from a fifth of it.
+DEFAULT_MAX_DROP = 0.05
+YELLOW_FRACTION = 0.2
+YELLOW_AT = DEFAULT_MAX_DROP * YELLOW_FRACTION
+RED_AT = DEFAULT_MAX_DROP
 # Going back down needs a clear margin so the light doesn't flicker.
 HYSTERESIS = 0.6
 
@@ -23,13 +26,19 @@ class Sample:
 class PerfMonitor:
     """Turns per-player frame-drop counters into a smoothed drop ratio."""
 
-    def __init__(self, smoothing: float = 0.35) -> None:
+    def __init__(self, smoothing: float = 0.35, max_drop: float = DEFAULT_MAX_DROP) -> None:
         self.smoothing = smoothing
+        self.set_max_drop(max_drop)
         self.ratio = 0.0          # smoothed fraction of frames dropped
         self.instant = 0.0        # last interval's fraction
         self.status = IDLE
         self.streams = 0
         self._last: dict[object, int] = {}
+
+    def set_max_drop(self, max_drop: float) -> None:
+        """Red past the acceptable drop rate, yellow from a fifth of it."""
+        self.red_at = max(1e-4, max_drop)
+        self.yellow_at = self.red_at * YELLOW_FRACTION
 
     def reset(self) -> None:
         self.ratio = self.instant = 0.0
@@ -55,18 +64,19 @@ class PerfMonitor:
             return self.status
         self.instant = min(1.0, dropped / expected)
         self.ratio += self.smoothing * (self.instant - self.ratio)
-        self.status = classify(self.ratio, self.status)
+        self.status = classify(self.ratio, self.status, self.yellow_at, self.red_at)
         return self.status
 
 
-def classify(ratio: float, current: str = IDLE) -> str:
-    if ratio >= RED_AT:
+def classify(ratio: float, current: str = IDLE, yellow_at: float = YELLOW_AT,
+             red_at: float = RED_AT) -> str:
+    if ratio >= red_at:
         return RED
-    if current == RED and ratio >= RED_AT * HYSTERESIS:
+    if current == RED and ratio >= red_at * HYSTERESIS:
         return RED
-    if ratio >= YELLOW_AT:
+    if ratio >= yellow_at:
         return YELLOW
-    if current in (RED, YELLOW) and ratio >= YELLOW_AT * HYSTERESIS:
+    if current in (RED, YELLOW) and ratio >= yellow_at * HYSTERESIS:
         return YELLOW
     return GREEN
 
@@ -74,14 +84,11 @@ def classify(ratio: float, current: str = IDLE) -> str:
 # Stream counts the benchmark can try.
 BENCH_STEPS = [1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 32]
 BENCH_START = 8
-# Most frames dropped a stream count may have and still count as playable:
-# the point where the traffic light turns red.
-BENCH_MAX_DROP = RED_AT
 
 
 class BenchmarkPlan:
     """Finds the highest stream count that plays acceptably (at most
-    BENCH_MAX_DROP of frames dropped) in few measurements.
+    ``max_drop`` of frames dropped) in few measurements.
 
     If N streams play acceptably, fewer will too, so the plan starts in the
     middle (8), doubles while it keeps passing, and once something fails
@@ -89,8 +96,9 @@ class BenchmarkPlan:
     measurements instead of trying every count in turn.
     """
 
-    def __init__(self, limit: int = 32) -> None:
+    def __init__(self, limit: int = 32, max_drop: float = DEFAULT_MAX_DROP) -> None:
         self.steps = [s for s in BENCH_STEPS if s <= limit] or [1]
+        self.max_drop = max_drop
         self.passed_i = -1                 # highest index known to pass
         self.failed_i = len(self.steps)    # lowest index known to fail
         start = [i for i, s in enumerate(self.steps) if s <= BENCH_START]
@@ -104,7 +112,7 @@ class BenchmarkPlan:
 
     def record(self, drop_ratio: float) -> None:
         self.results.append((self.current, drop_ratio))
-        if drop_ratio <= BENCH_MAX_DROP:
+        if drop_ratio <= self.max_drop:
             self.passed_i = self.index
         else:
             self.failed_i = self.index
@@ -121,3 +129,68 @@ class BenchmarkPlan:
     @property
     def recommended(self) -> int:
         return self.steps[self.passed_i] if self.passed_i >= 0 else 1
+
+
+class DropCurve:
+    """What the benchmark measured: the fraction of frames dropped at each
+    stream count it tried, with estimates in between.
+
+    Links the two user settings: the most streams that stay within an
+    acceptable drop rate, and the drop rate expected at a stream count.
+    Measurements are noisy, so the curve is made non-decreasing (more streams
+    never drop fewer frames).  Beyond the largest count tried there is no
+    data, and ``drop_at`` returns None.
+    """
+
+    def __init__(self, points) -> None:
+        pts = sorted((int(n), float(r)) for n, r in points if int(n) >= 1)
+        merged: dict[int, float] = {}
+        for n, r in pts:
+            merged[n] = max(r, merged.get(n, 0.0))
+        self.points: list[tuple[int, float]] = []
+        worst = 0.0
+        for n in sorted(merged):
+            worst = max(worst, merged[n])
+            self.points.append((n, worst))
+
+    def __bool__(self) -> bool:
+        return bool(self.points)
+
+    @property
+    def max_tested(self) -> int:
+        return self.points[-1][0] if self.points else 0
+
+    def drop_at(self, streams: int) -> float | None:
+        """Expected fraction of frames dropped at ``streams`` streams."""
+        if not self.points or streams > self.max_tested:
+            return None
+        n0, r0 = self.points[0]
+        if streams <= n0:
+            return r0 * streams / n0          # scale down towards 0 at 0 streams
+        for (na, ra), (nb, rb) in zip(self.points, self.points[1:]):
+            if na <= streams <= nb:
+                return ra + (rb - ra) * (streams - na) / (nb - na)
+        return self.points[-1][1]
+
+    def max_streams_for(self, max_drop: float) -> int:
+        """The most streams expected to drop at most ``max_drop`` (at least 1)."""
+        best = 1
+        for n in range(1, self.max_tested + 1):
+            r = self.drop_at(n)
+            if r is not None and r <= max_drop + 1e-12:
+                best = n
+        return best
+
+    def to_text(self) -> str:
+        return ",".join(f"{n}:{r:.5f}" for n, r in self.points)
+
+    @classmethod
+    def from_text(cls, text: str) -> "DropCurve":
+        points = []
+        for part in (text or "").split(","):
+            try:
+                n, r = part.split(":")
+                points.append((int(n), float(r)))
+            except ValueError:
+                continue
+        return cls(points)

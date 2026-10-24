@@ -4,15 +4,22 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields
 
+import math
+
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
-                               QPushButton, QSpinBox, QVBoxLayout)
+                               QPushButton, QSpinBox, QVBoxLayout, QWidget)
+
+from .perf import DEFAULT_MAX_DROP, DropCurve
 
 
 @dataclass
 class Settings:
     max_streams: int = 6
+    max_drop_pct: float = DEFAULT_MAX_DROP * 100   # acceptable dropped frames, %
+    bench_curve: str = ""          # benchmark measurements, "streams:fraction,..."
+    bench_date: str = ""
     min_area_pct: float = 4.0      # smallest video, as % of the window area
     gap: int = 2                   # pixels between videos
     crop_pct: float = 0.0          # how much of a video's edges may be cropped to fill gaps
@@ -25,6 +32,14 @@ class Settings:
     light_corner: str = "top-right"
     tray_icon: bool = True
     benchmark_asked: bool = False
+
+    @property
+    def max_drop(self) -> float:
+        return self.max_drop_pct / 100.0
+
+    @property
+    def curve(self) -> DropCurve:
+        return DropCurve.from_text(self.bench_curve)
 
     @property
     def min_area(self) -> float:
@@ -63,6 +78,104 @@ SOUND_MODES = [("hover", "Video under the mouse"),
                ("silent", "Silent")]
 
 
+class LimitsEditor(QWidget):
+    """The two linked limits: acceptable dropped frames and max simultaneous
+    videos.  With benchmark results, changing either one sets the other from
+    them; without, they are independent."""
+
+    MIN_DROP_PCT = 0.5
+
+    def __init__(self, curve: DropCurve, max_streams: int, max_drop_pct: float,
+                 bench_date: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self.curve = curve
+        self.bench_date = bench_date
+        self.drop = QDoubleSpinBox(minimum=self.MIN_DROP_PCT, maximum=50.0, decimals=1,
+                                   singleStep=0.5, suffix=" %", value=max_drop_pct)
+        self.drop.setToolTip("How many dropped frames you accept before playback counts as struggling.\n"
+                             "The performance light turns red above this, and yellow from a fifth of it.")
+        self.streams = QSpinBox(minimum=1, maximum=64, value=max_streams)
+        self.streams.setToolTip("Most videos that play at the same time; the rest wait in the queue.")
+        self.note = QLabel(wordWrap=True)
+        self.note.setStyleSheet("color: gray")
+        self.drop.valueChanged.connect(self._drop_changed)
+        self.streams.valueChanged.connect(self._streams_changed)
+
+        form = QFormLayout(self)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.addRow("Acceptable dropped frames", self.drop)
+        form.addRow("Max simultaneous videos", self.streams)
+        form.addRow(self.note)
+        self._update_note()
+
+    def _set_quietly(self, box, value) -> None:
+        box.blockSignals(True)
+        box.setValue(value)
+        box.blockSignals(False)
+
+    def _drop_changed(self, pct: float) -> None:
+        if self.curve:
+            self._set_quietly(self.streams, self.curve.max_streams_for(pct / 100))
+        self._update_note()
+
+    def _streams_changed(self, n: int) -> None:
+        if self.curve:
+            r = self.curve.drop_at(n)
+            if r is not None:
+                pct = max(self.MIN_DROP_PCT, math.ceil(r * 1000 - 1e-9) / 10)   # round up to 0.1%
+                self._set_quietly(self.drop, pct)
+        self._update_note()
+
+    def _update_note(self) -> None:
+        if not self.curve:
+            self.note.setText("Run the benchmark to link these: it measures how many frames your "
+                              "computer drops at each number of videos.")
+            return
+        n = self.streams.value()
+        r = self.curve.drop_at(n)
+        when = f" ({self.bench_date})" if self.bench_date else ""
+        if r is None:
+            self.note.setText(f"The benchmark{when} tested up to {self.curve.max_tested} videos; "
+                              f"{n} is untested, so it may drop more than "
+                              f"{self.drop.value():.1f}% of frames.")
+        else:
+            self.note.setText(f"From the benchmark{when}: about {r * 100:.1f}% of frames dropped "
+                              f"with {n} video{'s' * (n != 1)} playing.")
+
+    @property
+    def values(self) -> tuple[int, float]:
+        return self.streams.value(), self.drop.value()
+
+
+class BenchmarkResultsDialog(QDialog):
+    """Shown after a benchmark: what was measured, and the two linked limits
+    preset to the most videos within the acceptable drop rate."""
+
+    def __init__(self, curve: DropCurve, measured: list[tuple[int, float]],
+                 max_drop_pct: float, bench_date: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Benchmark results")
+        lines = "\n".join(f"{n:>3} videos at once: {r * 100:5.1f}% of frames dropped"
+                          for n, r in sorted(measured))
+        table = QLabel(lines)
+        table.setStyleSheet("font-family: monospace")
+        recommended = curve.max_streams_for(max_drop_pct / 100)
+        intro = QLabel(f"With at most {max_drop_pct:.1f}% of frames dropped, this computer can play "
+                       f"about {recommended} of your videos at once. Adjust either value; the other "
+                       f"follows the measurements.", wordWrap=True)
+        self.limits = LimitsEditor(curve, recommended, max_drop_pct, bench_date)
+        buttons = QDialogButtonBox()
+        buttons.addButton("Use these settings", QDialogButtonBox.AcceptRole)
+        buttons.addButton("Keep my current settings", QDialogButtonBox.RejectRole)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        box = QVBoxLayout(self)
+        box.addWidget(table)
+        box.addWidget(intro)
+        box.addWidget(self.limits)
+        box.addWidget(buttons)
+
+
 class SettingsDialog(QDialog):
     """Edits a copy of the settings; ``benchmark_requested`` is set if the
     user pressed the benchmark button."""
@@ -75,12 +188,12 @@ class SettingsDialog(QDialog):
         self.benchmark_requested = False
         s = settings
 
-        self.max_streams = QSpinBox(minimum=1, maximum=64, value=s.max_streams)
-        bench = QPushButton("Benchmark…")
-        bench.setToolTip("Measure how many of your videos this computer can play at once")
+        self.limits = LimitsEditor(s.curve, s.max_streams, s.max_drop_pct, s.bench_date)
+        bench = QPushButton("Run benchmark…")
+        bench.setToolTip("Measure how many frames this computer drops at each number of your videos")
         bench.clicked.connect(self._bench)
         row = QHBoxLayout()
-        row.addWidget(self.max_streams, 1)
+        row.addWidget(self.limits, 1)
         row.addWidget(bench)
 
         self.min_area = QDoubleSpinBox(minimum=0.5, maximum=100.0, decimals=1,
@@ -119,7 +232,7 @@ class SettingsDialog(QDialog):
         self.tray = QCheckBox("Show performance light in the system tray", checked=s.tray_icon)
 
         form = QFormLayout()
-        form.addRow("Max simultaneous videos", row)
+        form.addRow(row)
         form.addRow("Smallest video size", self.min_area)
         form.addRow("Gap between videos", self.gap)
         form.addRow("Crop edges to fill gaps, up to", self.crop)
@@ -147,7 +260,7 @@ class SettingsDialog(QDialog):
         self.accept()
 
     def apply_to(self, s: Settings) -> None:
-        s.max_streams = self.max_streams.value()
+        s.max_streams, s.max_drop_pct = self.limits.values
         s.min_area_pct = self.min_area.value()
         s.gap = self.gap.value()
         s.crop_pct = self.crop.value()

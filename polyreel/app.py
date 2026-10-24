@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 import time
+from datetime import date
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QRect, Qt, QTimer
@@ -14,11 +15,11 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QLabel, QMainWindow,
                                QMenu, QMessageBox, QSystemTrayIcon, QToolTip, QWidget)
 
 from . import layout as L
-from .perf import BENCH_MAX_DROP, IDLE, BenchmarkPlan, PerfMonitor
+from .perf import IDLE, BenchmarkPlan, DropCurve, PerfMonitor
 from .playlist import PLAYABLE_EXTENSIONS, Item, Playlists, expand_paths
 from .probe import NOT_VIDEO, Prober
 from .scheduler import DEFAULT_ASPECT, plan
-from .settings import SOUND_MODES, Settings, SettingsDialog
+from .settings import SOUND_MODES, BenchmarkResultsDialog, Settings, SettingsDialog
 from .tile import VideoTile
 from .ui import BAR_HEIGHT, CloseButton, Drawer, TileControls, TrafficLight, light_icon
 
@@ -116,7 +117,8 @@ class MainWindow(QMainWindow):
         self.controls.mute_toggled.connect(self._controls_mute)
         self._controls_target: VideoTile | None = None
         self.light.clicked.connect(self.open_settings)
-        self.perf = PerfMonitor()
+        self.perf = PerfMonitor(max_drop=self.settings.max_drop)
+        self._bench_pending = False   # start a benchmark once sample videos are read
 
         self.tray: QSystemTrayIcon | None = None
         self._setup_tray()
@@ -146,6 +148,8 @@ class MainWindow(QMainWindow):
         self._update_message()
         if paths:
             QTimer.singleShot(0, lambda: self.add_paths(paths))
+        elif not self.settings.benchmark_asked:
+            QTimer.singleShot(400, self._welcome)
 
     # ------------------------------------------------------------------ setup
     def _shortcuts(self) -> None:
@@ -195,7 +199,7 @@ class MainWindow(QMainWindow):
         for it in items:
             self.prober.submit(it.id, it.path)
         self._update_message()
-        if not self.settings.benchmark_asked:
+        if not self.settings.benchmark_asked and not self._bench_pending:
             self.settings.benchmark_asked = True
             self.settings.save()
             QTimer.singleShot(1500, self._offer_benchmark)
@@ -245,6 +249,20 @@ class MainWindow(QMainWindow):
                 self.pl.played.append(it)
         self.pl.touch()
         self.schedule_soon()
+        self._maybe_start_pending_benchmark()
+
+    def _maybe_start_pending_benchmark(self) -> None:
+        """After the welcome prompt: benchmark once enough samples are read."""
+        if not self._bench_pending:
+            return
+        everything = self.pl.playing + self.pl.queued + self.pl.played
+        ready = [it for it in everything if it.probed and not it.error]
+        waiting = any(not it.probed for it in everything)
+        if len(ready) >= 4 or (ready and not waiting):
+            self._bench_pending = False
+            QTimer.singleShot(500, self.start_benchmark)
+        elif not ready and not waiting:
+            self._bench_pending = False    # nothing playable was chosen
 
     # ------------------------------------------------------------- scheduling
     def schedule_soon(self) -> None:
@@ -521,6 +539,7 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             old_sound = self.settings.sound
             dlg.apply_to(self.settings)
+            self.perf.set_max_drop(self.settings.max_drop)
             if self.settings.sound != old_sound:
                 self._set_sound_mode(self.settings.sound)
             self.settings.save()
@@ -741,9 +760,10 @@ class MainWindow(QMainWindow):
         else:
             label = {"green": "Smooth", "yellow": "Some frames dropped", "red": "Struggling"}[status]
             tip = (f"{label}: {self.perf.streams} video{'s' * (self.perf.streams != 1)} playing, "
-                   f"{self.perf.ratio * 100:.1f}% of frames dropped\n"
+                   f"{self.perf.ratio * 100:.1f}% of frames dropped "
+                   f"(acceptable: {self.settings.max_drop_pct:.1f}%)\n"
                    f"Max simultaneous videos: {self.settings.max_streams} (click to change)")
-        self.light.set_status(status, tip)
+        self.light.set_status(status, tip, self.perf.ratio)
         if self.tray:
             if self.tray.property("status") != status:
                 self.tray.setIcon(light_icon(status))
@@ -751,13 +771,40 @@ class MainWindow(QMainWindow):
             self.tray.setToolTip("Polyreel — " + tip.split("\n")[0])
 
     # ------------------------------------------------------------- benchmark
+    def _welcome(self) -> None:
+        """First launch: ask for a few sample videos and benchmark with them."""
+        if self.settings.benchmark_asked or len(self.pl):
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Welcome to Polyreel")
+        box.setText("How many videos can this computer play at once?")
+        box.setInformativeText(
+            "Pick a few sample videos, ideally the kind you'll usually play, and Polyreel "
+            "will measure that with a quick benchmark (about half a minute). They stay in "
+            "your playlist afterwards.\n\nYou can run the benchmark again any time from Settings.")
+        files = box.addButton("Choose videos…", QMessageBox.AcceptRole)
+        folder = box.addButton("Choose a folder…", QMessageBox.AcceptRole)
+        box.addButton("Later", QMessageBox.RejectRole)
+        box.exec()
+        self.settings.benchmark_asked = True
+        self.settings.save()
+        if box.clickedButton() not in (files, folder):
+            return
+        self._bench_pending = True
+        if box.clickedButton() is files:
+            self.add_files_dialog()
+        else:
+            self.add_folder_dialog()
+        if not len(self.pl):
+            self._bench_pending = False   # nothing was chosen
+
     def _offer_benchmark(self) -> None:
         if self.bench or self.focus_tile:
             return
         r = QMessageBox.question(
             self, "Quick benchmark?",
             "Measure how many of these videos your computer can play at once?\n\n"
-            "This takes about half a minute and sets “Max simultaneous videos”.\n"
+            "This takes about half a minute and suggests “Max simultaneous videos”.\n"
             "You can run it any time from Settings.")
         if r == QMessageBox.Yes:
             self.start_benchmark()
@@ -775,7 +822,8 @@ class MainWindow(QMainWindow):
         for t in self.tiles.values():
             t.set_paused(True)
             t.hide()
-        self.bench = BenchState(plan=BenchmarkPlan(limit=32), sources=sources)
+        self.bench = BenchState(plan=BenchmarkPlan(limit=32, max_drop=self.settings.max_drop),
+                                sources=sources)
         self.perf.reset()
         self._bench_step()
 
@@ -803,7 +851,7 @@ class MainWindow(QMainWindow):
         self._bench_layout()
         self._update_message()
         # Warm up; a little longer after a failed round so the machine settles.
-        settle = 3000 if b.plan.results and b.plan.results[-1][1] > BENCH_MAX_DROP else 2000
+        settle = 3000 if b.plan.results and b.plan.results[-1][1] > b.plan.max_drop else 2000
         self._bench_after(settle, self._bench_measure_start)
 
     def _bench_after(self, ms: int, fn) -> None:
@@ -861,17 +909,17 @@ class MainWindow(QMainWindow):
         self._resume_others()
         self._apply_layout(animate=False)
         self._update_message()
-        if not cancelled:
-            n = b.plan.recommended
-            detail = "\n".join(f"  {k:>2} videos: {r * 100:5.1f}% frames dropped" for k, r in b.plan.results)
-            r = QMessageBox.question(
-                self, "Benchmark finished",
-                f"This computer played {n} of your videos at once with at most "
-                f"{BENCH_MAX_DROP:.0%} of frames dropped.\n\n{detail}\n\n"
-                f"Set “Max simultaneous videos” to {n}?")
-            if r == QMessageBox.Yes:
-                self.settings.max_streams = n
-                self.settings.save()
+        if not cancelled and b.plan.results:
+            s = self.settings
+            # Keep the measurements: they link the two limits from now on.
+            curve = DropCurve(b.plan.results)
+            s.bench_curve, s.bench_date = curve.to_text(), date.today().isoformat()
+            s.save()
+            dlg = BenchmarkResultsDialog(curve, b.plan.results, s.max_drop_pct, s.bench_date, self)
+            if dlg.exec():
+                s.max_streams, s.max_drop_pct = dlg.limits.values
+                self.perf.set_max_drop(s.max_drop)
+                s.save()
         self.schedule_soon()
 
     # -------------------------------------------------------------- shutdown

@@ -71,14 +71,18 @@ class TrafficLight(QWidget):
         super().__init__(parent)
         _native(self)
         self.status = IDLE
-        self.setFixedSize(QSize(66, 24))
+        self.text = "–"
+        self.setFixedSize(QSize(66, 40))
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip("No videos playing")
 
-    def set_status(self, status: str, tooltip: str) -> None:
+    def set_status(self, status: str, tooltip: str, ratio: float | None = None) -> None:
+        """``ratio`` is the fraction of frames dropped across all playing
+        videos, shown under the lamps (a dash when nothing plays)."""
         self.setToolTip(tooltip)
-        if status != self.status:
-            self.status = status
+        text = "–" if status == IDLE or ratio is None else drop_text(ratio)
+        if status != self.status or text != self.text:
+            self.status, self.text = status, text
             self.update()
 
     def mousePressEvent(self, e) -> None:
@@ -98,14 +102,24 @@ class TrafficLight(QWidget):
         p.setBrush(QColor("#1c1c20"))
         p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 11, 11)
         d = 14
-        y = (self.height() - d) / 2
         for i, s in enumerate((GREEN, YELLOW, RED)):
             c = QColor(COLORS[s])
             if s != self.status:
                 c = c.darker(420)
             p.setBrush(c)
-            p.drawEllipse(QRectF(6 + i * 19, y, d, d))
+            p.drawEllipse(QRectF(6 + i * 19, 5, d, d))
+        f = p.font()
+        f.setPixelSize(11)
+        p.setFont(f)
+        p.setPen(QColor(COLORS[self.status]) if self.status != IDLE else QColor("#8a8a90"))
+        p.drawText(QRectF(0, 21, self.width(), 16), Qt.AlignCenter, self.text)
         p.end()
+
+
+def drop_text(ratio: float) -> str:
+    """A dropped-frame fraction as the light shows it, e.g. "1.2%"."""
+    pct = max(0.0, ratio) * 100
+    return f"{pct:.0f}%" if pct >= 10 else f"{pct:.1f}%"
 
 
 class CloseButton(QWidget):

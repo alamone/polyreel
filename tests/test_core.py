@@ -218,11 +218,69 @@ def test_expand_paths_keeps_only_video_candidates(tmp_path):
     assert expand_paths([str(tmp_path / "e.jpg"), str(tmp_path / "a.mp4")]) == [str(tmp_path / "a.mp4")]
 
 
-def test_benchmark_accepts_up_to_five_percent_drops():
-    from polyreel.perf import BENCH_MAX_DROP
-    assert BENCH_MAX_DROP == 0.05
+def test_benchmark_accepts_up_to_five_percent_drops_by_default():
+    from polyreel.perf import DEFAULT_MAX_DROP
+    assert DEFAULT_MAX_DROP == 0.05
     b = BenchmarkPlan()
     b.record(0.049)                 # 8 streams: 4.9% dropped still passes
     assert b.passed_i >= 0 and b.recommended == 8
     b.record(0.051)                 # 16 streams: 5.1% fails
     assert b.failed_i < len(b.steps)
+
+
+def test_benchmark_uses_the_chosen_drop_rate():
+    b = BenchmarkPlan(max_drop=0.10)
+    b.record(0.08)                  # 8 streams: within 10%
+    assert b.recommended == 8
+
+
+def test_light_thresholds_follow_the_acceptable_drop_rate():
+    from polyreel.perf import classify
+    m = PerfMonitor(max_drop=0.10)
+    assert (m.yellow_at, m.red_at) == pytest.approx((0.02, 0.10))
+    assert classify(0.06, GREEN, m.yellow_at, m.red_at) == YELLOW
+    assert classify(0.11, GREEN, m.yellow_at, m.red_at) == RED
+    m.set_max_drop(0.20)
+    assert classify(0.11, GREEN, m.yellow_at, m.red_at) == YELLOW
+
+
+def test_drop_curve_links_drop_rate_and_stream_count():
+    from polyreel.perf import DropCurve
+    c = DropCurve([(8, 0.02), (16, 0.12), (12, 0.04), (10, 0.05)])   # 10 is noisy
+    assert c.points == [(8, 0.02), (10, 0.05), (12, 0.05), (16, 0.12)]   # made non-decreasing
+    assert c.drop_at(4) == pytest.approx(0.01)       # below the first point: towards 0
+    assert c.drop_at(14) == pytest.approx(0.085)     # interpolated
+    assert c.drop_at(17) is None                     # never tried
+    assert c.max_streams_for(0.05) == 12
+    assert c.max_streams_for(0.085) == 14
+    assert c.max_streams_for(1.0) == 16              # never beyond what was tried
+    assert c.max_streams_for(0.0) == 1
+    assert DropCurve.from_text(c.to_text()).points == c.points
+    assert not DropCurve.from_text("") and not DropCurve.from_text("junk")
+
+
+def test_limits_editor_keeps_the_two_values_linked():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from polyreel.perf import DropCurve
+    from polyreel.settings import LimitsEditor
+    app = QApplication.instance() or QApplication([])
+    e = LimitsEditor(DropCurve([(4, 0.01), (8, 0.04), (16, 0.12)]), 8, 5.0)
+    e.drop.setValue(10.0)                  # loosen the drop rate: more videos
+    assert e.values == (14, 10.0)
+    e.streams.setValue(4)                  # fewer videos: the expected drop rate
+    assert e.values == (4, 1.0)
+    e.streams.setValue(20)                 # untested: the drop rate is left alone
+    assert e.values == (20, 1.0) and "untested" in e.note.text()
+    free = LimitsEditor(DropCurve([]), 6, 5.0)    # no benchmark: independent
+    free.drop.setValue(12.0)
+    assert free.values == (6, 12.0)
+    del app
+
+
+def test_light_shows_the_dropped_frame_percentage():
+    from polyreel.ui import drop_text
+    assert drop_text(0.0) == "0.0%"
+    assert drop_text(0.0123) == "1.2%"
+    assert drop_text(0.256) == "26%"
