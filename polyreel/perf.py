@@ -74,13 +74,16 @@ def classify(ratio: float, current: str = IDLE) -> str:
 # Stream counts the benchmark can try.
 BENCH_STEPS = [1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 32]
 BENCH_START = 8
-BENCH_MAX_DROP = 0.02
+# Most frames dropped a stream count may have and still count as playable:
+# the point where the traffic light turns red.
+BENCH_MAX_DROP = RED_AT
 
 
 class BenchmarkPlan:
-    """Finds the highest stream count that plays smoothly in few measurements.
+    """Finds the highest stream count that plays acceptably (at most
+    BENCH_MAX_DROP of frames dropped) in few measurements.
 
-    If N streams play smoothly, fewer will too, so the plan starts in the
+    If N streams play acceptably, fewer will too, so the plan starts in the
     middle (8), doubles while it keeps passing, and once something fails
     bisects between the highest pass and the lowest failure.  That is 3-5
     measurements instead of trying every count in turn.

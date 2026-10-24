@@ -216,3 +216,13 @@ def test_expand_paths_keeps_only_video_candidates(tmp_path):
     # Videos and possibly-animated images are probed; JPEGs, audio and others never.
     assert found == ["a.mp4", "b.MKV", "c.gif", "d.png", "sub/h.webm".replace("/", __import__("os").sep)]
     assert expand_paths([str(tmp_path / "e.jpg"), str(tmp_path / "a.mp4")]) == [str(tmp_path / "a.mp4")]
+
+
+def test_benchmark_accepts_up_to_five_percent_drops():
+    from polyreel.perf import BENCH_MAX_DROP
+    assert BENCH_MAX_DROP == 0.05
+    b = BenchmarkPlan()
+    b.record(0.049)                 # 8 streams: 4.9% dropped still passes
+    assert b.passed_i >= 0 and b.recommended == 8
+    b.record(0.051)                 # 16 streams: 5.1% fails
+    assert b.failed_i < len(b.steps)

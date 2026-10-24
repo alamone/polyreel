@@ -866,7 +866,8 @@ class MainWindow(QMainWindow):
             detail = "\n".join(f"  {k:>2} videos: {r * 100:5.1f}% frames dropped" for k, r in b.plan.results)
             r = QMessageBox.question(
                 self, "Benchmark finished",
-                f"This computer played {n} of your videos at once smoothly.\n\n{detail}\n\n"
+                f"This computer played {n} of your videos at once with at most "
+                f"{BENCH_MAX_DROP:.0%} of frames dropped.\n\n{detail}\n\n"
                 f"Set “Max simultaneous videos” to {n}?")
             if r == QMessageBox.Yes:
                 self.settings.max_streams = n
