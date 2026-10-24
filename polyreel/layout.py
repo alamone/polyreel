@@ -354,8 +354,11 @@ def justified(keys: Sequence[Hashable], aspects: dict, groups: int, rows: bool) 
 
 def seeds(keys: Sequence[Hashable], aspects: dict) -> Iterable[Tree]:
     orders = [list(keys), sorted(keys, key=lambda k: aspects[k])]
+    # A good wall has around sqrt(n) rows or columns; far more (64 rows of
+    # one video) is never close, and trying them all is quadratic.
+    most = min(len(keys), max(8, math.ceil(3 * math.sqrt(len(keys)))))
     for order in orders:
-        for g in range(1, len(order) + 1):
+        for g in range(1, most + 1):
             yield justified(order, aspects, g, rows=True)
             yield justified(order, aspects, g, rows=False)
 

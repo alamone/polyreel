@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import queue
 import threading
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRect, Qt, Signal
@@ -17,6 +18,27 @@ ANIM_MS = 260
 # Starting a player (and its video output) can take a good fraction of a
 # second, so players start on background threads, a few at a time.
 _starting = threading.BoundedSemaphore(4)
+# Spare players are shut down one at a time: tearing many down at once can
+# stall drawing across the whole desktop for seconds.
+_retiring: queue.Queue = queue.Queue()
+_retirer: threading.Thread | None = None
+
+
+def take_retiring() -> list:
+    """Players still waiting to be shut down (for closing the app)."""
+    out = []
+    while True:
+        try:
+            out.append(_retiring.get_nowait())
+        except queue.Empty:
+            return out
+
+
+def _retire_loop() -> None:
+    while True:
+        tile = _retiring.get()
+        tile.shutdown()
+        tile.retired.emit(tile)
 
 
 class VideoTile(QWidget):
@@ -229,12 +251,13 @@ class VideoTile(QWidget):
 
     def retire(self) -> None:
         """Shut the player down in the background, then delete the tile."""
+        global _retirer
+        self.hide()
         self.retired.connect(self.deleteLater)   # queued to the GUI thread
-
-        def run():
-            self.shutdown()
-            self.retired.emit(self)
-        threading.Thread(target=run, daemon=True, name="mpv-retire").start()
+        if _retirer is None:
+            _retirer = threading.Thread(target=_retire_loop, daemon=True, name="mpv-retire")
+            _retirer.start()
+        _retiring.put(self)
 
     def shutdown(self, wait: float = 2.0) -> None:
         """Stop the player for good (any thread)."""

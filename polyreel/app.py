@@ -6,10 +6,11 @@ import os
 import sys
 import threading
 import time
+import traceback
 from datetime import date
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import QRect, Qt, QTimer
+from PySide6.QtCore import QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QCursor, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (QApplication, QFileDialog, QLabel, QMainWindow,
                                QMenu, QMessageBox, QSystemTrayIcon, QToolTip, QWidget)
@@ -20,7 +21,7 @@ from .playlist import PLAYABLE_EXTENSIONS, Item, Playlists, expand_paths
 from .probe import NOT_VIDEO, Prober
 from .scheduler import DEFAULT_ASPECT, plan
 from .settings import SOUND_MODES, BenchmarkResultsDialog, Settings, SettingsDialog
-from .tile import VideoTile
+from .tile import VideoTile, take_retiring
 from .ui import BAR_HEIGHT, CloseButton, Drawer, TileControls, TrafficLight, light_icon
 
 HOVER_ZONE = 24        # px from the bottom edge that reveals the drawer
@@ -70,6 +71,8 @@ class Stage(QWidget):
 
 
 class MainWindow(QMainWindow):
+    _planned = Signal(object)    # a plan worked out on a background thread
+
     def __init__(self, paths: list[str]) -> None:
         super().__init__()
         self.setWindowTitle("Polyreel")
@@ -127,6 +130,9 @@ class MainWindow(QMainWindow):
         self.perf = PerfMonitor(max_drop=self.settings.max_drop)
         self._bench_pending = False   # start a benchmark once sample videos are read
         self._results_open = False    # benchmark results on screen: the wall waits
+        self._planning = False        # a plan is being worked out in the background
+        self._replan = False          # something changed meanwhile: plan again after it
+        self._planned.connect(self._apply_plan)
 
         self.tray: QSystemTrayIcon | None = None
         self._setup_tray()
@@ -291,13 +297,49 @@ class MainWindow(QMainWindow):
         return QRect(0, 0, *self.stage_size())
 
     def schedule(self) -> None:
-        """Bump what no longer fits, start what does, and lay everything out."""
+        """Bump what no longer fits, start what does, and lay everything out.
+
+        Working out the plan can take a moment with a big wall, so it runs on
+        a background thread and is applied when ready (unless things changed
+        in the meantime, in which case it is worked out again)."""
         if self.bench or self.focus_tile or self._results_open:
+            return
+        if self._planning:
+            self._replan = True
             return
         s = self.settings
         w, h = self.stage_size()
-        p = plan(self.pl.playing, self.pl.queued, w, h, s.max_streams, s.min_area,
-                 s.lookahead, prev=self.layout_, crop=s.crop)
+        args = (list(self.pl.playing), list(self.pl.queued), w, h, s.max_streams, s.min_area, s.lookahead)
+        kwargs = dict(prev=self.layout_, crop=s.crop)
+        inputs = self._plan_inputs()
+        self._planning, self._replan = True, False
+
+        def work() -> None:
+            try:
+                p = plan(*args, **kwargs)
+            except Exception:
+                traceback.print_exc()
+                p = None
+            self._planned.emit((p, inputs))
+        threading.Thread(target=work, daemon=True, name="plan").start()
+
+    def _plan_inputs(self) -> tuple:
+        """What a plan depends on, to tell whether it is still current."""
+        s = self.settings
+        return (tuple(it.id for it in self.pl.playing), tuple(it.id for it in self.pl.queued),
+                self.stage_size(), s.max_streams, s.min_area, s.lookahead, s.crop)
+
+    def _apply_plan(self, result: tuple) -> None:
+        p, inputs = result
+        self._planning = False
+        if p is None:
+            return
+        if (self._replan or inputs != self._plan_inputs()
+                or self.bench or self.focus_tile or self._results_open):
+            self._replan = False
+            self.schedule_soon()
+            return
+        s = self.settings
         for it in p.demote:
             tile = self.tiles.pop(it.id)
             pos = tile.position()
@@ -318,6 +360,8 @@ class MainWindow(QMainWindow):
                 and not any(it.probed and not it.error for it in self.pl.queued)):
             if self.pl.recycle_played():
                 self.schedule_soon()
+        if p.more:
+            self.schedule_soon()
         self._update_message()
 
     def _acquire(self) -> VideoTile:
@@ -976,7 +1020,6 @@ class MainWindow(QMainWindow):
     def _bench_done(self) -> None:
         b = self.bench
         self.bench = None
-        self._trim_pool(self.settings.max_streams - len(self.tiles))
         self.perf.reset()
         for t in self.tiles.values():
             t.show()
@@ -988,6 +1031,8 @@ class MainWindow(QMainWindow):
             self._bench_report(b)
         finally:
             self._results_open = False
+        # Only now let go of the spare players, so the dialog isn't held up.
+        self._trim_pool(self.settings.max_streams - len(self.tiles))
         self._resume_others()
         self.schedule_soon()
 
@@ -1017,7 +1062,8 @@ class MainWindow(QMainWindow):
         # Stop every player at the same time rather than one after another
         # (each can take a few tenths of a second to release its video
         # output and audio device), and don't wait forever on a stuck one.
-        threads = [threading.Thread(target=t.shutdown, daemon=True) for t in self.all_tiles]
+        tiles = self.all_tiles + take_retiring()
+        threads = [threading.Thread(target=t.shutdown, daemon=True) for t in tiles]
         for th in threads:
             th.start()
         deadline = time.monotonic() + SHUTDOWN_WAIT

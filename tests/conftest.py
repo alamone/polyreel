@@ -1,6 +1,6 @@
 import pytest
 
-from polyreel import layout
+from polyreel import layout, scheduler
 
 
 @pytest.fixture(autouse=True)
@@ -9,3 +9,4 @@ def deterministic_search(monkeypatch):
     depend on how fast the machine running the tests is."""
     monkeypatch.setattr(layout, "SEARCH_BUDGET", None)
     monkeypatch.setattr(layout, "QUICK_BUDGET", None)
+    monkeypatch.setattr(scheduler, "FILL_BUDGET", None)

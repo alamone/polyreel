@@ -284,3 +284,16 @@ def test_light_shows_the_dropped_frame_percentage():
     assert drop_text(0.0) == "0.0%"
     assert drop_text(0.0123) == "1.2%"
     assert drop_text(0.256) == "26%"
+
+
+def test_plan_fills_many_slots_in_queue_order():
+    q = _items(*[16 / 9, 9 / 16, 4 / 3, 1.0] * 10)
+    p = plan([], q, W, H, max_streams=24, min_area=0.01)
+    assert p.start == q[:24]                    # bulk fill keeps queue order
+    assert p.layout.valid and len(p.layout.rects) == 24
+
+
+def test_plan_always_starts_one_video_even_if_too_big():
+    q = _items(16 / 9, 16 / 9, 16 / 9, 16 / 9, 16 / 9)
+    p = plan([], q, W, H, max_streams=5, min_area=0.9)
+    assert p.start == q[:1]
