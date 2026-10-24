@@ -24,7 +24,7 @@ class Settings:
     gap: int = 2                   # pixels between videos
     crop_pct: float = 0.0          # how much of a video's edges may be cropped to fill gaps
     lookahead: int = 4             # >1 lets a later queued video jump ahead if it fits better
-    sound: str = "hover"           # "hover": video under the mouse, "all", or "silent"
+    sound: str = "silent"          # "silent", "hover": video under the mouse, or "all"
     endless: bool = False
     shuffle_on_add: bool = False
     hwdec: str = "auto-safe"

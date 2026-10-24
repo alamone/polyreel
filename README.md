@@ -46,10 +46,11 @@ and stay roughly the same size, fitted together like puzzle pieces to fill the w
   moves it straight to *Played* (the next queued video takes its place).
 - **Endless playback** (optional): when the queue runs out, everything already
   played is queued again, so the wall never empties.
-- **Sound modes.** *Video under the mouse* (default): everything is muted except
+- **Sound modes.** *Silent* (default): new videos start muted;
+  unmute one with its own controls to hear it. *Video under the mouse*: everything is muted except
   the video you hover, at its own volume, plus any video whose volume you've
   changed (or unmuted) with its own controls, which keeps playing aloud. *All videos at once*: new videos start
-  at full volume. *Silent*: new videos start muted. In every mode a video's own
+  at full volume. In every mode a video's own
   mute and volume controls win. Press **M** to switch.
 - **Video only.** Folders are scanned for video files; animated GIFs and PNGs
   count, still images (GIF, PNG, JPEG, WebP…) and audio-only files are skipped.
