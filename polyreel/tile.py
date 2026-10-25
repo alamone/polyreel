@@ -24,7 +24,7 @@ WATCHED = ("duration", "volume", "container-fps")
 POLL_TEXT = "${=time-pos} ${=frame-drop-count} ${=decoder-frame-drop-count}"
 # For the performance log: how a file is actually being played.
 MEDIA_TEXT = ("hwdec=${=hwdec-current} vo=${=current-vo} size=${=video-params/w}x${=video-params/h} "
-              "fps=${=container-fps} codec=${=video-format}")
+              "fps=${=container-fps} codec=${=video-format} file=${=file-size} bytes")
 _numbers = iter(range(1, 1 << 30))
 # Starting a player (and its video output) can take a good fraction of a
 # second, so players start on background threads, a few at a time.
@@ -115,6 +115,13 @@ class VideoTile(QWidget):
             ytdl="no",
             sub_auto="no",
             audio_display="no",
+            # Read ahead a few seconds (in bigger, fewer reads) even from
+            # local files: with many videos on one disk, small reads as they
+            # go mean constant seeking, and the videos stall each other.
+            cache="yes",
+            cache_secs="10",
+            demuxer_max_bytes="32MiB",
+            demuxer_max_back_bytes="8MiB",
         )
         vo = os.environ.get("POLYREEL_VO")  # e.g. "x11" for headless testing
         if vo:
@@ -270,11 +277,13 @@ class VideoTile(QWidget):
         arrives in the background."""
         if not self._active or self.player is None:
             return
-        if PROFILER.enabled and not self._media_logged:
+        # (Once it is under way: the decoder isn't settled straight after loading.)
+        if PROFILER.enabled and not self._media_logged and self._state["time-pos"] > 0.5:
             self._media_logged = True
-            name = os.path.basename(getattr(self.item, "path", "") or "")
+            path = getattr(self.item, "path", "") or ""
+            name, folder = os.path.basename(path), os.path.dirname(path)
             self._command("expand-text", MEDIA_TEXT, callback=lambda e, r: PROFILER.log(
-                "player", f"#{self.num} playing {name}: {r if e is None else e!r}"))
+                "player", f"#{self.num} playing {name} (in {folder}): {r if e is None else e!r}"))
         now = time.monotonic()
         if now - self._poll_sent < 0.1 or (self._poll_out and now - self._poll_sent < 3.0):
             return
@@ -347,6 +356,11 @@ class VideoTile(QWidget):
             took = time.monotonic() - self._stop_sent
             if took > 0.2:
                 PROFILER.log("player", f"#{self.num} took {took:.2f}s to stop")
+
+    @property
+    def load_started(self) -> float:
+        """When the current file was asked for (0 if none)."""
+        return self._load_sent
 
     @property
     def is_playing(self) -> bool:

@@ -38,6 +38,7 @@ class Profiler:
         self._cpu = (time.monotonic(), time.process_time())
         self._worst_gap = 0.0
         self._noted: set[str] = set()
+        self._watching = False
 
     # -- lifecycle -----------------------------------------------------------
     def start(self, folder: str, header: dict) -> Path:
@@ -56,6 +57,7 @@ class Profiler:
         self._beat = time.monotonic()
         self._cpu = (time.monotonic(), time.process_time())
         self._noted = set()
+        self._watching = True
         self.enabled = True
         self._file.write(f"Polyreel performance log, {datetime.now():%Y-%m-%d %H:%M:%S}\n")
         for key, value in header.items():
@@ -84,6 +86,11 @@ class Profiler:
             if self._file:
                 self._file.write(line)
 
+    def quiet(self) -> None:
+        """Keep logging, but stop watching for freezes (when closing)."""
+        self._watching = False
+        faulthandler.cancel_dump_traceback_later()
+
     def note_once(self, key: str) -> bool:
         """True the first time ``key`` is asked about in this log."""
         if key in self._noted:
@@ -93,7 +100,7 @@ class Profiler:
 
     def beat(self) -> None:
         """Called by the window's thread a few times a second."""
-        if not self.enabled:
+        if not self.enabled or not self._watching:
             return
         now = time.monotonic()
         self._worst_gap = max(self._worst_gap, now - self._beat)
@@ -121,6 +128,8 @@ class Profiler:
         noted = 0
         while self.enabled:
             time.sleep(0.05)
+            if not self._watching:
+                continue
             gap = time.monotonic() - self._beat
             if gap >= STALL_NOTE:
                 if stalled_since is None:
@@ -156,10 +165,14 @@ def _memory_mb() -> float:
                             ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
                             ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
                             ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.GetCurrentProcess.restype = wintypes.HANDLE
+            k32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+            k32.K32GetProcessMemoryInfo.restype = wintypes.BOOL
             c = Counters()
             c.cb = ctypes.sizeof(c)
-            ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.windll.kernel32.GetCurrentProcess(),
-                                                     ctypes.byref(c), c.cb)
+            if not k32.K32GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(c), c.cb):
+                return 0.0
             return c.WorkingSetSize / 2**20
         with open("/proc/self/statm") as f:
             return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 2**20

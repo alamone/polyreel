@@ -28,8 +28,8 @@ from .ui import BAR_HEIGHT, CloseButton, Drawer, TileControls, TrafficLight, lig
 HOVER_ZONE = 24        # px from the bottom edge that reveals the drawer
 HIDE_DELAY_MS = 700
 SHUTDOWN_WAIT = 2.0    # seconds to wait for players to stop when closing
-START_BATCH = 4        # new videos started together; the next few follow once these are up
-START_WAIT = 1.0       # ...or after this many seconds, if they are slow to start
+START_PARALLEL = 4     # videos opening at once; the next starts when one is up
+START_GIVE_UP = 10.0   # ...or when one has been opening this long
 BENCH_LIMIT = 32       # most videos the benchmark tries at once
 BENCH_START_WAIT = 10  # seconds a benchmark round waits for its players to start
 BENCH_MEASURE = 4.0    # seconds a benchmark round is measured
@@ -145,8 +145,7 @@ class MainWindow(QMainWindow):
         self._beat_timer = QTimer(self, interval=100)   # performance log: is the window responsive?
         self._beat_timer.timeout.connect(PROFILER.beat)
         self._to_load: list[tuple[VideoTile, Item]] = []   # placed, waiting to start
-        self._loading: list[VideoTile] = []                # started, not yet playing
-        self._loading_since = 0.0
+        self._loading: list[VideoTile] = []                # opening, not yet playing
         self._load_timer = QTimer(self, interval=50)
         self._load_timer.timeout.connect(self._load_next)
 
@@ -400,28 +399,29 @@ class MainWindow(QMainWindow):
         self._update_message()
 
     def _load_next(self) -> None:
-        """Start placed videos a few at a time.  Setting up a hardware
-        decoder takes a moment, and starting dozens at once makes every video
-        wait for the slowest; this way the first ones appear straight away."""
-        self._loading = [t for t in self._loading if t.item is not None and not t.is_playing]
-        waited = time.monotonic() - self._loading_since
-        if self.bench or self.focus_tile or self._results_open or (
-                self._loading and waited < START_WAIT):
+        """Start placed videos a few at a time.  Opening a file (and setting
+        up its decoder) takes a moment, and opening dozens at once makes
+        every one wait for the slowest, especially from a slow disk; this
+        way the first ones appear straight away and the rest follow."""
+        now = time.monotonic()
+        self._loading = [t for t in self._loading if t.item is not None and not t.is_playing
+                         and now - t.load_started < START_GIVE_UP]
+        if self.bench or self.focus_tile or self._results_open:
             self._load_timer.start()
             return
-        self._loading = []
-        while self._to_load and len(self._loading) < START_BATCH:
+        started = []
+        while self._to_load and len(self._loading) < START_PARALLEL:
             tile, it = self._to_load.pop(0)
             if self.tiles.get(it.id) is not tile:
                 continue                  # skipped or bumped before it started
             tile.load(it, start=it.resume_pos, hwdec=self.settings.hwdec)
             tile.set_paused(self.paused_all)
             self._loading.append(tile)
-        if self._loading:
-            PROFILER.log("wall", f"starting {len(self._loading)} video(s) "
-                                 f"(players #{', #'.join(str(t.num) for t in self._loading)}); "
-                                 f"{len(self._to_load)} waiting")
-        self._loading_since = time.monotonic()
+            started.append(tile)
+        if started:
+            PROFILER.log("wall", f"starting {len(started)} video(s) "
+                                 f"(players #{', #'.join(str(t.num) for t in started)}); "
+                                 f"{len(self._loading)} opening, {len(self._to_load)} waiting")
         if self._to_load:
             self._load_timer.start()
         else:
@@ -1141,6 +1141,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e) -> None:
         PROFILER.log("app", "closing")
+        self._beat_timer.stop()
+        PROFILER.quiet()               # the window is going: no freeze reports from here on
         self._cursor_timer.stop()
         self._perf_timer.stop()
         # Disappear at once; shutting the players down can take a moment.
