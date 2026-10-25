@@ -21,7 +21,7 @@ and stay roughly the same size, fitted together like puzzle pieces to fill the w
   the window area). Videos that would break either limit wait in the queue.
 - **Benchmark, with linked limits.** On first start Polyreel asks for a few
   sample videos and benchmarks them: it plays your own files several at a time
-  and measures the share of frames dropped at each count. It tries up to 64 videos: it starts at 8,
+  and measures the share of frames dropped at each count. It tries up to 32 videos: it starts at 8,
   doubles while that stays acceptable and narrows in once it doesn't, so it
   needs only 3 to 5 measurements (about half a minute). Afterwards
   *Acceptable dropped frames* (default 5%) and *Max simultaneous videos* are

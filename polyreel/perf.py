@@ -131,7 +131,7 @@ class BenchmarkPlan:
     measurements instead of trying every count in turn.
     """
 
-    def __init__(self, limit: int = 64, max_drop: float = DEFAULT_MAX_DROP) -> None:
+    def __init__(self, limit: int = 32, max_drop: float = DEFAULT_MAX_DROP) -> None:
         self.steps = [s for s in BENCH_STEPS if s <= limit] or [1]
         self.max_drop = max_drop
         self.passed_i = -1                 # highest index known to pass

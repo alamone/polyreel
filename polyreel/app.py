@@ -27,8 +27,10 @@ from .ui import BAR_HEIGHT, CloseButton, Drawer, TileControls, TrafficLight, lig
 HOVER_ZONE = 24        # px from the bottom edge that reveals the drawer
 HIDE_DELAY_MS = 700
 SHUTDOWN_WAIT = 2.0    # seconds to wait for players to stop when closing
-BENCH_LIMIT = 64       # most videos the benchmark tries at once
-BENCH_START_WAIT = 20  # seconds a benchmark round waits for its players to start
+BENCH_LIMIT = 32       # most videos the benchmark tries at once
+BENCH_START_WAIT = 10  # seconds a benchmark round waits for its players to start
+BENCH_MEASURE = 4.0    # seconds a benchmark round is measured
+BENCH_EARLY = 1.5      # ...or this long, if it is clearly far over the limit
 BENCH_DRAIN_WAIT = 30  # seconds the benchmark waits for a round's players to stop
 EMPTY_TEXT = ("Drop videos or folders here\n\n"
               "O  add files     Ctrl+O  add a folder     Ctrl+,  settings")
@@ -968,9 +970,9 @@ class MainWindow(QMainWindow):
         if not playing and time.monotonic() - b.wait_start < BENCH_START_WAIT:
             self._bench_after(100, self._bench_wait_ready)
             return
-        # Warm up; a little longer after a failed round so the machine settles.
-        settle = 3000 if b.plan.results and b.plan.results[-1][1] > b.plan.max_drop else 2000
-        self._bench_after(settle, self._bench_measure_start)
+        # Warm up briefly. (Recovering from a failed round happened before
+        # these players started, while the last ones stopped.)
+        self._bench_after(2000, self._bench_measure_start)
 
     def _bench_after(self, ms: int, fn) -> None:
         b = self.bench
@@ -990,12 +992,27 @@ class MainWindow(QMainWindow):
     def _bench_measure_start(self) -> None:
         self.bench.t0 = time.monotonic()
         self.bench.c0 = self._bench_counters()
-        self._bench_after(4000, self._bench_measure_end)
+        self._bench_after(500, self._bench_measure_check)
 
-    def _bench_measure_end(self) -> None:
+    def _bench_measure_check(self) -> None:
         b = self.bench
         elapsed = time.monotonic() - b.t0
-        c1 = self._bench_counters()
+        ratio = self._bench_ratio(self._bench_counters(), elapsed)
+        # A round far over the limit is clear early on; cutting it short
+        # spares a machine that is struggling to keep up (and its window).
+        clearly_over = elapsed >= BENCH_EARLY and ratio > max(0.3, 4 * b.plan.max_drop)
+        if elapsed < BENCH_MEASURE and not clearly_over:
+            self._bench_after(500, self._bench_measure_check)
+            return
+        b.plan.record(ratio)
+        if b.plan.done:
+            self._bench_finish()
+        else:
+            self._bench_step()
+
+    def _bench_ratio(self, c1: dict, elapsed: float) -> float:
+        """Share of frames lost since the round's measuring began."""
+        b = self.bench
         dropped = expected = 0.0
         stuck = len(b.tiles) - len(b.c0)     # never got going
         for key, s0 in b.c0.items():
@@ -1011,12 +1028,7 @@ class MainWindow(QMainWindow):
         # A player that couldn't play (or answer) counts as fully dropped.
         expected += stuck * 30 * elapsed
         dropped += stuck * 30 * elapsed
-        ratio = dropped / expected if expected else 1.0
-        b.plan.record(ratio)
-        if b.plan.done:
-            self._bench_finish()
-        else:
-            self._bench_step()
+        return dropped / expected if expected else 1.0
 
     def _bench_finish(self, cancelled: bool = False) -> None:
         b = self.bench
