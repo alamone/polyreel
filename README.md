@@ -19,8 +19,8 @@ and stay roughly the same size, fitted together like puzzle pieces to fill the w
   doesn't jump around.
 - **Your limits.** *Max simultaneous videos* and *Smallest video size* (as a % of
   the window area). Videos that would break either limit wait in the queue.
-- **Benchmark, with linked limits.** On first start Polyreel asks for a few
-  sample videos and benchmarks them: it plays your own files several at a time
+- **Benchmark, with linked limits.** The first videos you add start a
+  benchmark (Esc skips it): Polyreel plays your own files several at a time
   and measures the share of frames dropped at each count. It tries up to 32 videos: it starts at 8,
   doubles while that stays acceptable and narrows in once it doesn't, so it
   needs only 3 to 5 measurements (about half a minute). Afterwards

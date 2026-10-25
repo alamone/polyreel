@@ -32,8 +32,11 @@ BENCH_START_WAIT = 10  # seconds a benchmark round waits for its players to star
 BENCH_MEASURE = 4.0    # seconds a benchmark round is measured
 BENCH_EARLY = 1.5      # ...or this long, if it is clearly far over the limit
 BENCH_DRAIN_WAIT = 30  # seconds the benchmark waits for a round's players to stop
-EMPTY_TEXT = ("Drop videos or folders here\n\n"
-              "O  add files     Ctrl+O  add a folder     Ctrl+,  settings")
+KEYS_TEXT = "O  add files     Ctrl+O  add a folder     Ctrl+,  settings"
+EMPTY_TEXT = "Drop videos or folders here\n\n" + KEYS_TEXT
+FIRST_TEXT = ("Drop videos or folders here to begin the benchmark\n\n"
+              "Polyreel plays a few of them at once to measure how many\n"
+              "this computer can handle (about half a minute).\n\n" + KEYS_TEXT)
 
 
 @dataclass
@@ -164,8 +167,6 @@ class MainWindow(QMainWindow):
         self._update_message()
         if paths:
             QTimer.singleShot(0, lambda: self.add_paths(paths))
-        elif not self.settings.benchmark_asked:
-            QTimer.singleShot(400, self._welcome)
 
     # ------------------------------------------------------------------ setup
     def _shortcuts(self) -> None:
@@ -214,11 +215,9 @@ class MainWindow(QMainWindow):
         items = self.pl.add(files, shuffle=self.settings.shuffle_on_add)
         for it in items:
             self.prober.submit(it.id, it.path)
+        if not self.settings.benchmark_asked:
+            self._bench_pending = True    # the first videos added begin the benchmark
         self._update_message()
-        if not self.settings.benchmark_asked and not self._bench_pending:
-            self.settings.benchmark_asked = True
-            self.settings.save()
-            QTimer.singleShot(1500, self._offer_benchmark)
 
     def add_files_dialog(self) -> None:
         exts = " ".join(f"*{e}" for e in sorted(PLAYABLE_EXTENSIONS))
@@ -268,17 +267,32 @@ class MainWindow(QMainWindow):
         self._maybe_start_pending_benchmark()
 
     def _maybe_start_pending_benchmark(self) -> None:
-        """After the welcome prompt: benchmark once enough samples are read."""
+        """First videos: benchmark once enough of them have been read."""
         if not self._bench_pending:
             return
         everything = self.pl.playing + self.pl.queued + self.pl.played
         ready = [it for it in everything if it.probed and not it.error]
         waiting = any(not it.probed for it in everything)
         if len(ready) >= 4 or (ready and not waiting):
-            self._bench_pending = False
-            QTimer.singleShot(500, self.start_benchmark)
+            self.settings.benchmark_asked = True
+            self.settings.save()
+            QTimer.singleShot(0, self._start_pending_benchmark)
         elif not ready and not waiting:
-            self._bench_pending = False    # nothing playable was chosen
+            self._bench_pending = False    # nothing playable yet: wait for the next videos
+            self._update_message()
+            self.schedule_soon()
+
+    def _start_pending_benchmark(self) -> None:
+        if self._bench_pending:          # (still pending: not skipped meanwhile)
+            self._bench_pending = False  # the wall stays on hold until now
+            self.start_benchmark()
+
+    def _skip_pending_benchmark(self) -> None:
+        self._bench_pending = False
+        self.settings.benchmark_asked = True   # it can still be run from Settings
+        self.settings.save()
+        self._update_message()
+        self.schedule_soon()
 
     # ------------------------------------------------------------- scheduling
     def schedule_soon(self) -> None:
@@ -304,7 +318,7 @@ class MainWindow(QMainWindow):
         Working out the plan can take a moment with a big wall, so it runs on
         a background thread and is applied when ready (unless things changed
         in the meantime, in which case it is worked out again)."""
-        if self.bench or self.focus_tile or self._results_open:
+        if self.bench or self.focus_tile or self._results_open or self._bench_pending:
             return
         if self._planning:
             self._replan = True
@@ -514,6 +528,8 @@ class MainWindow(QMainWindow):
     def escape(self) -> None:
         if self.bench:
             self._bench_finish(cancelled=True)
+        elif self._bench_pending:
+            self._skip_pending_benchmark()
         elif self.focus_tile:
             self.exit_focus(finished=False)
         elif self.isFullScreen():
@@ -640,8 +656,10 @@ class MainWindow(QMainWindow):
             text = "Benchmarking: waiting for the last round's videos to stop…  (Esc to cancel)"
         elif self.bench:
             text = f"Benchmarking: {self.bench.plan.current} videos at once…  (Esc to cancel)"
+        elif self._bench_pending:
+            text = "Reading videos…  the benchmark starts in a moment  (Esc to skip it)"
         elif not len(self.pl):
-            text = EMPTY_TEXT
+            text = EMPTY_TEXT if self.settings.benchmark_asked else FIRST_TEXT
         elif not self.pl.playing and any(not it.probed for it in self.pl.queued):
             text = "Reading videos…"
         elif not self.pl.playing and not self.pl.queued:
@@ -831,44 +849,6 @@ class MainWindow(QMainWindow):
             self.tray.setToolTip("Polyreel — " + tip.split("\n")[0])
 
     # ------------------------------------------------------------- benchmark
-    def _welcome(self) -> None:
-        """First launch: ask for a few sample videos and benchmark with them."""
-        if self.settings.benchmark_asked or len(self.pl):
-            return
-        box = QMessageBox(self)
-        box.setWindowTitle("Welcome to Polyreel")
-        box.setText("How many videos can this computer play at once?")
-        box.setInformativeText(
-            "Pick a few sample videos, ideally the kind you'll usually play, and Polyreel "
-            "will measure that with a quick benchmark (about half a minute). They stay in "
-            "your playlist afterwards.\n\nYou can run the benchmark again any time from Settings.")
-        files = box.addButton("Choose videos…", QMessageBox.AcceptRole)
-        folder = box.addButton("Choose a folder…", QMessageBox.AcceptRole)
-        box.addButton("Later", QMessageBox.RejectRole)
-        box.exec()
-        self.settings.benchmark_asked = True
-        self.settings.save()
-        if box.clickedButton() not in (files, folder):
-            return
-        self._bench_pending = True
-        if box.clickedButton() is files:
-            self.add_files_dialog()
-        else:
-            self.add_folder_dialog()
-        if not len(self.pl):
-            self._bench_pending = False   # nothing was chosen
-
-    def _offer_benchmark(self) -> None:
-        if self.bench or self.focus_tile:
-            return
-        r = QMessageBox.question(
-            self, "Quick benchmark?",
-            "Measure how many of these videos your computer can play at once?\n\n"
-            "This takes about half a minute and suggests “Max simultaneous videos”.\n"
-            "You can run it any time from Settings.")
-        if r == QMessageBox.Yes:
-            self.start_benchmark()
-
     def start_benchmark(self) -> None:
         if self.bench:
             return
