@@ -314,7 +314,33 @@ def test_frames_lost_counts_slow_motion_as_lost():
 
 
 def test_perf_monitor_turns_red_for_slow_motion():
-    m = PerfMonitor(smoothing=1.0)
+    m = PerfMonitor(smoothing=1.0, grace=0)
     m.update({1: Sample(0, 30.0, at=1.0, pos=0.0)}, 1.0)
     status = m.update({1: Sample(0, 30.0, at=2.0, pos=0.5)}, 1.0)   # half speed, no drops
     assert status == RED and m.ratio == pytest.approx(0.5)
+
+
+def test_perf_monitor_ignores_videos_getting_going():
+    m = PerfMonitor(smoothing=1.0)
+    # Stuck at the start for two seconds (setting up), then smooth.
+    for at, pos in ((10.0, 0.0), (11.0, 0.0), (12.0, 0.4), (13.0, 1.4), (14.0, 2.4)):
+        status = m.update({1: Sample(0, 30.0, at=at, pos=pos)}, 1.0)
+    assert status == GREEN and m.ratio == 0.0
+
+
+def test_performance_log_records_a_stall_and_where_it_was(tmp_path):
+    import time as _time
+    from polyreel.profiler import Profiler
+    prof = Profiler()
+    path = prof.start(str(tmp_path), {"test": "yes"})
+    prof.beat()
+    prof.log("app", "hello")
+    _time.sleep(0.45)                     # the "window" stops responding
+    prof.beat()
+    _time.sleep(0.15)
+    prof.snapshot(players=3)
+    prof.stop()
+    text = path.read_text()
+    assert "test: yes" in text and "[app] hello" in text
+    assert "window unresponsive" in text and "test_performance_log_records_a_stall" in text
+    assert "in all" in text and "players=3" in text and "cpu=" in text

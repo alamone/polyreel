@@ -6,12 +6,16 @@ from dataclasses import asdict, dataclass, fields
 
 import math
 
-from PySide6.QtCore import QSettings
+from pathlib import Path
+
+from PySide6.QtCore import QSettings, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
                                QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
 from .perf import DEFAULT_MAX_DROP, DropCurve
+from .profiler import log_folder
 
 
 @dataclass
@@ -32,6 +36,7 @@ class Settings:
     light_corner: str = "top-right"
     tray_icon: bool = True
     benchmark_asked: bool = False
+    profile_log: bool = False      # record a performance log for troubleshooting
 
     @property
     def max_drop(self) -> float:
@@ -230,6 +235,14 @@ class SettingsDialog(QDialog):
         self.corner.addItems(self.CORNERS)
         self.corner.setCurrentText(s.light_corner)
         self.tray = QCheckBox("Show performance light in the system tray", checked=s.tray_icon)
+        self.profile = QCheckBox("Record a performance log (for troubleshooting)", checked=s.profile_log)
+        self.profile.setToolTip("Writes what Polyreel is doing, and any moment the window stops responding,\n"
+                                "to a text file you can send along with a problem report.")
+        logs = QPushButton("Open log folder")
+        logs.clicked.connect(self._open_logs)
+        self.profile_row = QHBoxLayout()
+        self.profile_row.addWidget(self.profile, 1)
+        self.profile_row.addWidget(logs)
 
         form = QFormLayout()
         form.addRow(row)
@@ -245,6 +258,7 @@ class SettingsDialog(QDialog):
         box.addLayout(form)
         for w in (self.endless, self.shuffle, self.show_light, self.tray):
             box.addWidget(w)
+        box.addLayout(self.profile_row)
         hint = QLabel("Keys: Space pause all · F fullscreen · O add files · Ctrl+O add folder · "
                       "Esc leave focus/fullscreen · N skip video under mouse · M sound mode")
         hint.setWordWrap(True)
@@ -254,6 +268,11 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         box.addWidget(buttons)
+
+    def _open_logs(self) -> None:
+        folder = Path(log_folder())
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def _bench(self) -> None:
         self.benchmark_requested = True
@@ -272,3 +291,4 @@ class SettingsDialog(QDialog):
         s.show_light = self.show_light.isChecked()
         s.light_corner = self.corner.currentText()
         s.tray_icon = self.tray.isChecked()
+        s.profile_log = self.profile.isChecked()

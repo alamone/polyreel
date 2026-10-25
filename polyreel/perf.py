@@ -28,6 +28,9 @@ class Sample:
 # A player whose position falls behind the clock by more than this share is
 # playing in slow motion (as an overloaded one does instead of dropping frames).
 SLOW_TOLERANCE = 0.04
+# A video that has just started (or resumed) takes a moment to get going;
+# the light ignores it for this many seconds.
+STARTUP_GRACE = 2.0
 
 
 def frames_lost(before: Sample, after: Sample, dt: float | None = None,
@@ -57,8 +60,11 @@ def frames_lost(before: Sample, after: Sample, dt: float | None = None,
 class PerfMonitor:
     """Turns per-player frame-drop counters into a smoothed drop ratio."""
 
-    def __init__(self, smoothing: float = 0.35, max_drop: float = DEFAULT_MAX_DROP) -> None:
+    def __init__(self, smoothing: float = 0.35, max_drop: float = DEFAULT_MAX_DROP,
+                 grace: float = STARTUP_GRACE) -> None:
         self.smoothing = smoothing
+        self.grace = grace
+        self._since: dict[object, float] = {}   # when each player (re)started
         self.set_max_drop(max_drop)
         self.ratio = 0.0          # smoothed fraction of frames dropped
         self.instant = 0.0        # last interval's fraction
@@ -76,6 +82,7 @@ class PerfMonitor:
         self.status = IDLE
         self.streams = 0
         self._last.clear()
+        self._since.clear()
 
     def update(self, samples: dict[object, Sample], dt: float) -> str:
         """Feed the counters of every *playing* player, ``dt`` seconds apart."""
@@ -83,6 +90,11 @@ class PerfMonitor:
         expected = 0.0
         for key, s in samples.items():
             prev = self._last.get(key)
+            if s.at:
+                if prev is None or s.dropped < prev.dropped or s.pos + 1.0 < prev.pos:
+                    self._since[key] = s.at        # started, resumed or looped
+                if s.at - self._since.get(key, s.at) < self.grace:
+                    continue
             # A busy player may not have answered since last time; its
             # next fresh reading then spans the whole gap.
             if prev is not None and (s.at == 0 or s.at != prev.at):
@@ -91,6 +103,7 @@ class PerfMonitor:
                     dropped += change[0]
                     expected += change[1]
         self._last = dict(samples)
+        self._since = {k: v for k, v in self._since.items() if k in samples}
         self.streams = len(samples)
         if not samples:
             self.reset()

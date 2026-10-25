@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QLabel, QMainWindow,
 from . import layout as L
 from .perf import IDLE, BenchmarkPlan, DropCurve, PerfMonitor, frames_lost
 from .playlist import PLAYABLE_EXTENSIONS, Item, Playlists, expand_paths
+from .profiler import PROFILER, log_folder, system_info
 from .probe import NOT_VIDEO, Prober
 from .scheduler import DEFAULT_ASPECT, plan
 from .settings import SOUND_MODES, BenchmarkResultsDialog, Settings, SettingsDialog
@@ -27,6 +28,8 @@ from .ui import BAR_HEIGHT, CloseButton, Drawer, TileControls, TrafficLight, lig
 HOVER_ZONE = 24        # px from the bottom edge that reveals the drawer
 HIDE_DELAY_MS = 700
 SHUTDOWN_WAIT = 2.0    # seconds to wait for players to stop when closing
+START_BATCH = 4        # new videos started together; the next few follow once these are up
+START_WAIT = 1.0       # ...or after this many seconds, if they are slow to start
 BENCH_LIMIT = 32       # most videos the benchmark tries at once
 BENCH_START_WAIT = 10  # seconds a benchmark round waits for its players to start
 BENCH_MEASURE = 4.0    # seconds a benchmark round is measured
@@ -78,8 +81,9 @@ class Stage(QWidget):
 class MainWindow(QMainWindow):
     _planned = Signal(object)    # a plan worked out on a background thread
 
-    def __init__(self, paths: list[str]) -> None:
+    def __init__(self, paths: list[str], profile: bool = False) -> None:
         super().__init__()
+        self._profile_forced = profile    # --profile: log this run whatever the setting
         self.setWindowTitle("Polyreel")
         self.resize(1280, 760)
         self.setAcceptDrops(True)
@@ -138,6 +142,13 @@ class MainWindow(QMainWindow):
         self._planning = False        # a plan is being worked out in the background
         self._replan = False          # something changed meanwhile: plan again after it
         self._planned.connect(self._apply_plan)
+        self._beat_timer = QTimer(self, interval=100)   # performance log: is the window responsive?
+        self._beat_timer.timeout.connect(PROFILER.beat)
+        self._to_load: list[tuple[VideoTile, Item]] = []   # placed, waiting to start
+        self._loading: list[VideoTile] = []                # started, not yet playing
+        self._loading_since = 0.0
+        self._load_timer = QTimer(self, interval=50)
+        self._load_timer.timeout.connect(self._load_next)
 
         self.tray: QSystemTrayIcon | None = None
         self._setup_tray()
@@ -165,6 +176,7 @@ class MainWindow(QMainWindow):
         self._shortcuts()
         self._place_overlays()
         self._update_message()
+        self._apply_profiling()
         if paths:
             QTimer.singleShot(0, lambda: self.add_paths(paths))
 
@@ -331,11 +343,17 @@ class MainWindow(QMainWindow):
         self._planning, self._replan = True, False
 
         def work() -> None:
+            t0 = time.monotonic()
             try:
                 p = plan(*args, **kwargs)
             except Exception:
                 traceback.print_exc()
+                PROFILER.log("plan", "failed: " + traceback.format_exc().strip().splitlines()[-1])
                 p = None
+            if p is not None:
+                PROFILER.log("plan", f"{time.monotonic() - t0:.2f}s for {len(args[0])} playing and "
+                                     f"{len(args[1])} queued: start {len(p.start)}, bump {len(p.demote)}"
+                                     f"{', more to come' if p.more else ''}")
             self._planned.emit((p, inputs))
         threading.Thread(target=work, daemon=True, name="plan").start()
 
@@ -353,6 +371,7 @@ class MainWindow(QMainWindow):
         if (self._replan or inputs != self._plan_inputs()
                 or self.bench or self.focus_tile or self._results_open):
             self._replan = False
+            PROFILER.log("plan", "out of date when ready; planning again")
             self.schedule_soon()
             return
         s = self.settings
@@ -365,9 +384,9 @@ class MainWindow(QMainWindow):
             self.pl.start(it)
             tile = self._acquire()
             self.tiles[it.id] = tile
-            tile.load(it, start=it.resume_pos, hwdec=s.hwdec)
             tile.user_muted = s.sound == "silent"   # new videos start muted in silent mode
-            tile.set_paused(self.paused_all)
+            self._to_load.append((tile, it))
+        self._load_next()
         self.layout_ = p.layout
         self._apply_layout(animate=True)
 
@@ -379,6 +398,34 @@ class MainWindow(QMainWindow):
         if p.more:
             self.schedule_soon()
         self._update_message()
+
+    def _load_next(self) -> None:
+        """Start placed videos a few at a time.  Setting up a hardware
+        decoder takes a moment, and starting dozens at once makes every video
+        wait for the slowest; this way the first ones appear straight away."""
+        self._loading = [t for t in self._loading if t.item is not None and not t.is_playing]
+        waited = time.monotonic() - self._loading_since
+        if self.bench or self.focus_tile or self._results_open or (
+                self._loading and waited < START_WAIT):
+            self._load_timer.start()
+            return
+        self._loading = []
+        while self._to_load and len(self._loading) < START_BATCH:
+            tile, it = self._to_load.pop(0)
+            if self.tiles.get(it.id) is not tile:
+                continue                  # skipped or bumped before it started
+            tile.load(it, start=it.resume_pos, hwdec=self.settings.hwdec)
+            tile.set_paused(self.paused_all)
+            self._loading.append(tile)
+        if self._loading:
+            PROFILER.log("wall", f"starting {len(self._loading)} video(s) "
+                                 f"(players #{', #'.join(str(t.num) for t in self._loading)}); "
+                                 f"{len(self._to_load)} waiting")
+        self._loading_since = time.monotonic()
+        if self._to_load:
+            self._load_timer.start()
+        else:
+            self._load_timer.stop()
 
     def _acquire(self) -> VideoTile:
         if self.pool:
@@ -615,6 +662,7 @@ class MainWindow(QMainWindow):
             self.settings.save()
             self._setup_tray()
             self._place_overlays()
+            self._apply_profiling()
             self.schedule_soon()
             if dlg.benchmark_requested:
                 QTimer.singleShot(200, self.start_benchmark)
@@ -842,6 +890,11 @@ class MainWindow(QMainWindow):
                    f"(acceptable: {self.settings.max_drop_pct:.1f}%)\n"
                    f"Max simultaneous videos: {self.settings.max_streams} (click to change)")
         self.light.set_status(status, tip, self.perf.ratio)
+        if PROFILER.enabled:
+            PROFILER.snapshot(players=len(self.all_tiles), spare=len(self.pool), wall=len(self.tiles),
+                              starting=len(self._to_load) + len(self._loading),
+                              bench=self.bench.plan.current if self.bench else "-",
+                              light=status, lost=f"{self.perf.ratio * 100:.1f}%", measured=self.perf.streams)
         if self.tray:
             if self.tray.property("status") != status:
                 self.tray.setIcon(light_icon(status))
@@ -852,6 +905,7 @@ class MainWindow(QMainWindow):
     def start_benchmark(self) -> None:
         if self.bench:
             return
+        PROFILER.log("bench", "starting")
         everything = self.pl.playing + self.pl.queued + self.pl.played
         sources = [it for it in everything if it.probed and not it.error][:4]
         if not sources:
@@ -896,16 +950,21 @@ class MainWindow(QMainWindow):
         self._update_message()
 
         def check() -> None:
-            if (any(not t.is_stopped for t in b.draining)
-                    and time.monotonic() - b.wait_start < BENCH_DRAIN_WAIT):
+            waiting = [t for t in b.draining if not t.is_stopped]
+            took = time.monotonic() - b.wait_start
+            if waiting and took < BENCH_DRAIN_WAIT:
                 self._bench_after(100, check)
                 return
+            if b.draining:
+                PROFILER.log("bench", f"previous players stopped in {took:.2f}s"
+                                      + (f"; gave up on {len(waiting)}" if waiting else ""))
             b.draining = []
             then()
         check()
 
     def _bench_start_round(self) -> None:
         b = self.bench
+        PROFILER.log("bench", f"round: {b.plan.current} videos")
         self._trim_pool(b.plan.current)
         self._update_message()
         # Lay out before the new players start, while the machine is quiet.
@@ -950,6 +1009,8 @@ class MainWindow(QMainWindow):
         if not playing and time.monotonic() - b.wait_start < BENCH_START_WAIT:
             self._bench_after(100, self._bench_wait_ready)
             return
+        PROFILER.log("bench", f"{sum(1 for t in b.tiles if t.sample() is not None)} of {len(b.tiles)} "
+                              f"playing after {time.monotonic() - b.wait_start:.2f}s")
         # Warm up briefly. (Recovering from a failed round happened before
         # these players started, while the last ones stopped.)
         self._bench_after(2000, self._bench_measure_start)
@@ -984,6 +1045,8 @@ class MainWindow(QMainWindow):
         if elapsed < BENCH_MEASURE and not clearly_over:
             self._bench_after(500, self._bench_measure_check)
             return
+        PROFILER.log("bench", f"{b.plan.current} videos: {ratio * 100:.1f}% lost, measured over {elapsed:.1f}s"
+                              + (" (clearly over: cut short)" if clearly_over else ""))
         b.plan.record(ratio)
         if b.plan.done:
             self._bench_finish()
@@ -1024,6 +1087,7 @@ class MainWindow(QMainWindow):
     def _bench_done(self) -> None:
         b = self.bench
         self.bench = None
+        PROFILER.log("bench", "cancelled" if b.cancelled else f"done: {b.plan.results}")
         self.perf.reset()
         for t in self.tiles.values():
             t.show()
@@ -1048,13 +1112,35 @@ class MainWindow(QMainWindow):
             s.bench_curve, s.bench_date = curve.to_text(), date.today().isoformat()
             s.save()
             dlg = BenchmarkResultsDialog(curve, b.plan.results, s.max_drop_pct, s.bench_date, self)
-            if dlg.exec():
+            PROFILER.log("bench", "showing the results")
+            accepted = dlg.exec()
+            PROFILER.log("bench", f"results closed: {'using' if accepted else 'kept'} "
+                                  f"max {dlg.limits.values[0]} videos at {dlg.limits.values[1]}%")
+            if accepted:
                 s.max_streams, s.max_drop_pct = dlg.limits.values
                 self.perf.set_max_drop(s.max_drop)
                 s.save()
 
     # -------------------------------------------------------------- shutdown
+    def _apply_profiling(self) -> None:
+        """Start or stop the performance log to match the setting."""
+        want = self.settings.profile_log or self._profile_forced
+        if want and not PROFILER.enabled:
+            from dataclasses import asdict
+            from . import __version__
+            screen = self.screen()
+            header = {"polyreel": __version__, **system_info(),
+                      "screen": f"{screen.size().width()}x{screen.size().height()} "
+                                f"at {screen.devicePixelRatio():g}x" if screen else "?",
+                      "settings": asdict(self.settings)}
+            PROFILER.start(log_folder(), header)
+            self._beat_timer.start()
+        elif not want and PROFILER.enabled:
+            self._beat_timer.stop()
+            PROFILER.stop()
+
     def closeEvent(self, e) -> None:
+        PROFILER.log("app", "closing")
         self._cursor_timer.stop()
         self._perf_timer.stop()
         # Disappear at once; shutting the players down can take a moment.
@@ -1073,4 +1159,5 @@ class MainWindow(QMainWindow):
         deadline = time.monotonic() + SHUTDOWN_WAIT
         for th in threads:
             th.join(max(0.0, deadline - time.monotonic()))
+        PROFILER.stop()
         super().closeEvent(e)

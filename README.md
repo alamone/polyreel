@@ -129,6 +129,24 @@ the result is in `dist\Polyreel`.
 | Endless playback | When the queue runs out, queue everything already played again. |
 | Gap, shuffle, light position, tray icon | As named. |
 
+## Troubleshooting
+
+If playback stutters, the window stops responding, or the benchmark gives odd
+results, turn on **Settings → Record a performance log** (or start Polyreel
+with `--profile`), reproduce the problem, and attach the newest log to an
+issue. **Open log folder** shows where the logs are (on Windows,
+`%LOCALAPPDATA%\Polyreel\Polyreel\logs`); the last 10 are kept.
+
+The log records your setup (versions, CPU, screen, settings), what Polyreel is
+doing (players starting, loading and stopping, layout plans, benchmark
+rounds), whether each video is actually hardware-decoded, a snapshot every
+second (players, CPU, memory, threads, frames lost), and every moment the
+window stops responding: how long, and the code it was busy in. A freeze of
+2 seconds or more also writes out what every thread was doing.
+
+To start over as on a new computer, delete Polyreel's settings
+(`reg delete HKCU\Software\Polyreel /f` on Windows) and start it without files.
+
 ## Project layout
 
 ```
@@ -137,6 +155,7 @@ polyreel/
   scheduler.py  which videos start / wait / get bumped (pure Python, unit tested)
   playlist.py   played / playing / queued lists
   perf.py       frame-drop monitor, traffic-light levels, benchmark plan
+  profiler.py   optional performance log for troubleshooting
   tile.py       one libmpv player embedded in a native child window
   probe.py      background probing of each file's shape and length
   ui.py         playlist drawer, traffic light and close-button widgets

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QWidget
 
 from .mpvlib import mpv
 from .perf import Sample
+from .profiler import PROFILER
 
 ANIM_MS = 260
 # Properties watched continuously; they change rarely.  Position and
@@ -21,6 +22,10 @@ ANIM_MS = 260
 # per frame per video swamps a big wall, so those are asked for (``poll``).
 WATCHED = ("duration", "volume", "container-fps")
 POLL_TEXT = "${=time-pos} ${=frame-drop-count} ${=decoder-frame-drop-count}"
+# For the performance log: how a file is actually being played.
+MEDIA_TEXT = ("hwdec=${=hwdec-current} vo=${=current-vo} size=${=video-params/w}x${=video-params/h} "
+              "fps=${=container-fps} codec=${=video-format}")
+_numbers = iter(range(1, 1 << 30))
 # Starting a player (and its video output) can take a good fraction of a
 # second, so players start on background threads, a few at a time.
 _starting = threading.BoundedSemaphore(4)
@@ -73,6 +78,7 @@ class VideoTile(QWidget):
         self.setGeometry(0, 0, 1, 1)
         self.show()
 
+        self.num = next(_numbers)   # for the performance log
         self.item = None
         self._active = False     # true once the current file has loaded
         self._muted = True
@@ -90,6 +96,9 @@ class VideoTile(QWidget):
         self._poll_sent = 0.0    # when the last poll went out
         self._poll_out = False   # a poll is waiting for its answer
         self.polled_at = 0.0     # when the last answer about this file arrived
+        self._load_sent = 0.0    # for the performance log
+        self._stop_sent = 0.0
+        self._media_logged = True
 
         opts = dict(
             wid=str(int(self.winId())),
@@ -124,7 +133,9 @@ class VideoTile(QWidget):
     def _start_player(self, opts: dict) -> None:
         """Starter thread: create the player without holding up the GUI."""
         player = None
+        t0 = time.monotonic()
         with _starting:
+            waited = time.monotonic() - t0
             try:
                 player = mpv.MPV(**opts)
                 try:
@@ -138,8 +149,17 @@ class VideoTile(QWidget):
                 player.register_event_callback(self._on_event)
                 player.register_key_binding("MBTN_LEFT", self._on_left)
                 player.register_key_binding("MBTN_RIGHT", self._on_right)
-            except Exception:
+            except Exception as e:
+                PROFILER.log("player", f"#{self.num} could not start: {e!r}")
                 player = None
+        if player is not None and PROFILER.enabled and PROFILER.note_once("libmpv"):
+            try:
+                PROFILER.log("player", f"libmpv {player.mpv_version}")
+            except Exception:
+                pass
+        if player is not None:
+            PROFILER.log("player", f"#{self.num} started in {time.monotonic() - t0:.2f}s "
+                                   f"(waited {waited:.2f}s for its turn)")
         self.player = player
         self._started.set()
         self._player_started.emit()
@@ -173,6 +193,7 @@ class VideoTile(QWidget):
 
     def _retry_later(self) -> None:
         if not self._retry_due:
+            PROFILER.log("player", f"#{self.num} message queue full; retrying {len(self._pending)} command(s)")
             self._retry_due = True
             QTimer.singleShot(100, self._send_pending)
 
@@ -181,6 +202,8 @@ class VideoTile(QWidget):
         name = event.event_id.value
         if name == mpv.MpvEventID.FILE_LOADED:
             self._active = True
+            if self._load_sent:
+                PROFILER.log("player", f"#{self.num} loaded in {time.monotonic() - self._load_sent:.2f}s")
         elif name == mpv.MpvEventID.END_FILE:
             data = event.data
             if data is not None and data.reason == mpv.MpvEventEndFile.ERROR and self.item is not None:
@@ -247,6 +270,11 @@ class VideoTile(QWidget):
         arrives in the background."""
         if not self._active or self.player is None:
             return
+        if PROFILER.enabled and not self._media_logged:
+            self._media_logged = True
+            name = os.path.basename(getattr(self.item, "path", "") or "")
+            self._command("expand-text", MEDIA_TEXT, callback=lambda e, r: PROFILER.log(
+                "player", f"#{self.num} playing {name}: {r if e is None else e!r}"))
         now = time.monotonic()
         if now - self._poll_sent < 0.1 or (self._poll_out and now - self._poll_sent < 3.0):
             return
@@ -256,6 +284,8 @@ class VideoTile(QWidget):
 
     def _on_poll(self, file: int, error, result) -> None:   # event thread
         self._poll_out = False
+        if isinstance(error, mpv.EventOverflowError):
+            PROFILER.log("player", f"#{self.num} message queue overflowed")
         if error is not None or file != self._file or not isinstance(result, str):
             return
         parts = result.split(" ")
@@ -288,6 +318,8 @@ class VideoTile(QWidget):
         self._set("pause", False)
         self._file += 1
         self.polled_at = 0.0
+        self._load_sent = time.monotonic()
+        self._media_logged = False
         self._state.update({"time-pos": 0.0, "duration": item.duration or 0.0,
                             "frame-drop-count": 0, "decoder-frame-drop-count": 0})
         self._command("loadfile", item.path)
@@ -298,6 +330,10 @@ class VideoTile(QWidget):
         if self._anim:
             self._anim.stop()
         self._file += 1
+        self.polled_at = 0.0                  # nothing left over from the last file
+        self._state["time-pos"] = 0.0
+        self._load_sent = 0.0
+        self._stop_sent = time.monotonic()
         self._stops_sent += 1
         n = self._stops_sent
         self._command("stop", callback=lambda e, r: self._stop_done(n, e))
@@ -308,6 +344,14 @@ class VideoTile(QWidget):
         # command; that isn't the answer, which still follows.
         if not isinstance(error, mpv.EventOverflowError):
             self._stops_done = max(self._stops_done, n)
+            took = time.monotonic() - self._stop_sent
+            if took > 0.2:
+                PROFILER.log("player", f"#{self.num} took {took:.2f}s to stop")
+
+    @property
+    def is_playing(self) -> bool:
+        """The current file has loaded (frames are on their way)."""
+        return self._active
 
     @property
     def is_stopped(self) -> bool:
@@ -329,11 +373,13 @@ class VideoTile(QWidget):
         """Stop the player for good (any thread)."""
         self.item = None
         self._started.wait(wait)
+        t0 = time.monotonic()
         try:
             if self.player is not None:
                 self.player.terminate()
         except Exception:
             pass
+        PROFILER.log("player", f"#{self.num} shut down in {time.monotonic() - t0:.2f}s")
 
     def set_paused(self, paused: bool) -> None:
         if paused != self._paused:

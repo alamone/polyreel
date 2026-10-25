@@ -59,7 +59,8 @@ def main() -> int:
         return 1
 
     from .app import MainWindow
-    win = MainWindow(sys.argv[1:])
+    args = sys.argv[1:]
+    win = MainWindow([a for a in args if a != "--profile"], profile="--profile" in args)
     win.show()
     return app.exec()
 
