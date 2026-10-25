@@ -1,7 +1,8 @@
 # Builds the ready-to-run Windows zip (Polyreel.exe with Python, Qt and libmpv
 # bundled).
 #
-# - Pushing a tag like v0.1.0 builds it and publishes a GitHub Release.
+# - Publishing a release on GitHub (or pushing a tag like v0.1.0) builds it
+#   and attaches the zip to that release, creating the release if needed.
 # - Changes to the app or its packaging on main (and manual runs from the
 #   Actions tab) only build it; the zip is attached to the run as an artifact
 #   for testing.
@@ -16,6 +17,8 @@ on:
       - "packaging/**"
       - ".github/workflows/windows-build.yml"
       - "requirements.txt"
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -92,4 +95,11 @@ jobs:
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME $env:ZIP --title "Polyreel $env:GITHUB_REF_NAME" --generate-notes
+        run: |
+          # A release made on GitHub's website already exists: add the zip to it.
+          gh release view $env:GITHUB_REF_NAME *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:GITHUB_REF_NAME $env:ZIP --clobber
+          } else {
+            gh release create $env:GITHUB_REF_NAME $env:ZIP --title "Polyreel $env:GITHUB_REF_NAME" --generate-notes
+          }
