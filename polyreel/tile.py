@@ -115,9 +115,12 @@ class VideoTile(QWidget):
             ytdl="no",
             sub_auto="no",
             audio_display="no",
-            # Read ahead a few seconds (in bigger, fewer reads) even from
-            # local files: with many videos on one disk, small reads as they
-            # go mean constant seeking, and the videos stall each other.
+            # Read ahead a few seconds, in bigger and fewer reads, even from
+            # "local" files: with many videos on one disk or network share
+            # (mpv treats a share like a local disk), small reads as they go
+            # mean constant seeking or round trips, and the videos stall
+            # each other.
+            stream_buffer_size="1MiB",
             cache="yes",
             cache_secs="10",
             demuxer_max_bytes="32MiB",
