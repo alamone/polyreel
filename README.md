@@ -33,9 +33,9 @@ and stay roughly the same size, fitted together like puzzle pieces to fill the w
   rate), red = struggling (past it). Below the lamps is the percentage of frames
   currently being dropped across all playing videos.
   Hover it for numbers; click it for settings.
-- **Click a video to focus it.** Everything else pauses, the video fills the window,
-  and when it finishes the wall comes back and resumes. Click again or press Esc to
-  return early.
+- **Focus on one video** (right-click it → *Focus*). Everything else pauses, the
+  video fills the window, and when it finishes the wall comes back and resumes.
+  Right-click → *Back to the wall* or press Esc to return early.
 - **Three playlists.** Move the mouse to the bottom edge to reveal
   *Played*, *Playing* and *Queued*. Click one to open it: the playlists dock below
   the wall, which shrinks to fit above them; close them all to get the full
@@ -102,13 +102,12 @@ the result is in `dist\Polyreel`.
 
 | | |
 |---|---|
-| Click a video | Focus it (pause others, fill the window) / click again to go back |
 | Hover a video | Seek bar, play/pause, volume and mute for that video |
 | ✕ on a video (on hover) | Move it to *Played* now |
-| Right-click | Menu: focus, skip, add, settings, benchmark |
+| Right-click a video | Menu: focus on it (pause others, fill the window) / back to the wall, skip, add, settings, benchmark |
 | Mouse at bottom edge | Show the playlist bar; click a list to dock it open |
 | Space | Pause / resume all |
-| F, F11, double-click empty space | Fullscreen |
+| F, F11, double-click | Fullscreen on / off |
 | Esc | Leave focus → leave fullscreen; cancels a running benchmark |
 | N | Skip the video under the mouse |
 | M | Switch sound mode (under the mouse → all → silent) |

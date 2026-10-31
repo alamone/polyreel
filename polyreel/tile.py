@@ -54,7 +54,7 @@ def _retire_loop() -> None:
 
 class VideoTile(QWidget):
     # Signals are emitted from mpv's event thread; Qt queues them to the GUI thread.
-    clicked = Signal(object)
+    double_clicked = Signal(object)
     right_clicked = Signal(object)
     finished = Signal(object)
     failed = Signal(object, str)
@@ -157,7 +157,7 @@ class VideoTile(QWidget):
                 player.observe_property("eof-reached", self._on_eof)
                 player.observe_property("video-params", self._on_video_params)
                 player.register_event_callback(self._on_event)
-                player.register_key_binding("MBTN_LEFT", self._on_left)
+                player.register_key_binding("MBTN_LEFT_DBL", self._on_double)
                 player.register_key_binding("MBTN_RIGHT", self._on_right)
             except Exception as e:
                 PROFILER.log("player", f"#{self.num} could not start: {e!r}")
@@ -241,9 +241,9 @@ class VideoTile(QWidget):
         if w > 0 and h > 0:
             self.shape_changed.emit(self, w / h)
 
-    def _on_left(self, state, *_):
-        if state and state[0] == "d":
-            self.clicked.emit(self)
+    def _on_double(self, state, *_):
+        if state and state[0] in "dp":      # mpv reports a double-click as down or press
+            self.double_clicked.emit(self)
 
     def _on_right(self, state, *_):
         if state and state[0] == "d":

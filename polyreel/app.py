@@ -72,7 +72,7 @@ class Stage(QWidget):
         self.window_.stage_resized()
 
     def mouseDoubleClickEvent(self, e) -> None:
-        self.window_.toggle_fullscreen()
+        self.window_.double_clicked()
 
     def contextMenuEvent(self, e) -> None:
         self.window_.show_menu(e.globalPos(), None)
@@ -139,6 +139,7 @@ class MainWindow(QMainWindow):
         self.perf = PerfMonitor(max_drop=self.settings.max_drop)
         self._bench_pending = False   # start a benchmark once sample videos are read
         self._results_open = False    # benchmark results on screen: the wall waits
+        self._last_double_click = 0.0
         self._planning = False        # a plan is being worked out in the background
         self._replan = False          # something changed meanwhile: plan again after it
         self._planned.connect(self._apply_plan)
@@ -431,7 +432,7 @@ class MainWindow(QMainWindow):
         if self.pool:
             return self.pool.pop()
         tile = VideoTile(self.stage, hwdec=self.settings.hwdec)
-        tile.clicked.connect(self._tile_clicked)
+        tile.double_clicked.connect(self._tile_double_clicked)
         tile.right_clicked.connect(lambda t: self.show_menu(QCursor.pos(), t))
         tile.finished.connect(self._tile_finished)
         tile.failed.connect(self._tile_failed)
@@ -515,14 +516,6 @@ class MainWindow(QMainWindow):
             self.pl.touch()
             self.schedule_soon()
 
-    def _tile_clicked(self, tile: VideoTile) -> None:
-        if self.bench or tile.item is None:
-            return
-        if self.focus_tile is None:
-            self.enter_focus(tile)
-        elif tile is self.focus_tile:
-            self.exit_focus(finished=False)
-
     # ------------------------------------------------------------------ focus
     def enter_focus(self, tile: VideoTile) -> None:
         if self.bench or self.focus_tile is tile:
@@ -568,6 +561,19 @@ class MainWindow(QMainWindow):
         self.paused_all = not self.paused_all
         for t in self.tiles.values():
             t.set_paused(self.paused_all)
+
+    def _tile_double_clicked(self, _tile: VideoTile) -> None:
+        self.double_clicked()      # (a method, so Qt runs it on the window's thread)
+
+    def double_clicked(self) -> None:
+        """Double-click on a video or the background: fullscreen on or off.
+        One double-click can reach both a video's player and the window
+        behind it, so a second report right after the first is ignored."""
+        now = time.monotonic()
+        if now - self._last_double_click < 0.5:
+            return
+        self._last_double_click = now
+        self.toggle_fullscreen()
 
     def toggle_fullscreen(self) -> None:
         self.showNormal() if self.isFullScreen() else self.showFullScreen()
