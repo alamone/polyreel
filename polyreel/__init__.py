@@ -8,4 +8,4 @@ Foundation, either version 3 of the License, or (at your option) any later
 version.  It is distributed WITHOUT ANY WARRANTY; see the LICENSE file.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

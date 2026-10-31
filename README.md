@@ -92,8 +92,9 @@ python -m polyreel [video files or folders...]
 ### Building the Windows zip
 
 The [Windows build workflow](.github/workflows/windows-build.yml) builds it on GitHub:
-pushing a tag such as `v0.1.0` builds the zip and publishes a release, and running the
-workflow by hand from the Actions tab builds a test zip without releasing. To build
+publishing a release (with a new tag such as `v0.1.1`) builds the zip and attaches it
+to the release, and running the workflow by hand from the Actions tab builds a test
+zip without releasing. To build
 locally, put `libmpv-2.dll` in the project root and run
 `pip install pyinstaller` then `pyinstaller --noconfirm packaging/polyreel.spec`;
 the result is in `dist\Polyreel`.
